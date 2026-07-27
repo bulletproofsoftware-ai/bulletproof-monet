@@ -15,7 +15,7 @@ Please report privately through GitHub private vulnerability reporting:
 
 https://github.com/bulletproofsoftware-ai/bulletproof-monet/security/advisories/new
 
-If that is unavailable to you, email **security@bulletproofsoftware.ai** instead.
+If that is unavailable to you, email **marc@bulletproofsoftware.ai** instead.
 
 **Do not open a public issue for a vulnerability.** Public issues are fine for ordinary bugs.
 
