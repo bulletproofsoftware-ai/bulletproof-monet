@@ -2,7 +2,9 @@
 
 Monet is a self-hostable personal assistant that runs on one Linux host and is reachable over Telegram. It drives the Claude Code CLI as a subprocess: the scripts here build prompts, manage conversation sessions, run scheduled jobs, and deliver results — the intelligence is the `claude` binary you already have a subscription to. It is a single-user system by design, locked to one Telegram chat id. Beyond your existing Claude subscription and a VPS, it costs nothing to run: every bundled service (Qdrant, Ollama, n8n, Postgres) is open source and runs locally.
 
-> Full documentation in [`docs/`](docs/) · security scan in [`docs/scan/scan-report.md`](docs/scan/scan-report.md) · system overview: [briefing](media/system-overview.md).
+![bulletproof-monet — overview](docs/media/infographic.png)
+
+> Full documentation in [`docs/`](docs/) · security scan in [`docs/scan/scan-report.md`](docs/scan/scan-report.md) · system overview: [briefing](media/system-overview.md) · [generated briefing](media/system-overview-briefing.md) · [video](media/system-overview.mp4).
 
 ## What you get
 
