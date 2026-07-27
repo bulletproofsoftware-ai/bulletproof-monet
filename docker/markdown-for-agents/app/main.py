@@ -40,6 +40,8 @@ _BLOCKED_NETWORKS = [
     ipaddress.ip_network("172.16.0.0/12"),     # RFC1918
     ipaddress.ip_network("192.168.0.0/16"),    # RFC1918
     ipaddress.ip_network("169.254.0.0/16"),    # Link-local / cloud metadata
+    ipaddress.ip_network("0.0.0.0/8"),         # "This network" — 0.0.0.0 reaches localhost on Linux
+    ipaddress.ip_network("100.64.0.0/10"),     # CGNAT / Tailscale — no ipaddress predicate covers this
     ipaddress.ip_network("::1/128"),           # IPv6 loopback
     ipaddress.ip_network("fc00::/7"),          # IPv6 private
     ipaddress.ip_network("fe80::/10"),         # IPv6 link-local
@@ -47,6 +49,26 @@ _BLOCKED_NETWORKS = [
 
 
 def _blocked_ip(addr: ipaddress._BaseAddress) -> bool:
+    # ::ffff:127.0.0.1 reaches the same host as 127.0.0.1, so an IPv4-mapped
+    # address has to be unwrapped before any range test. Recent CPython folds
+    # this into is_private, but unwrapping explicitly keeps the check correct
+    # on older interpreters too.
+    mapped = getattr(addr, "ipv4_mapped", None)
+    if mapped is not None:
+        addr = mapped
+    # The named list above documents intent; these predicates catch the rest of
+    # the special-purpose space (0.0.0.0/8, 198.18.0.0/15, 240.0.0.0/4,
+    # multicast, ...) so the block list cannot silently fall behind the IANA
+    # registry.
+    if (
+        addr.is_private
+        or addr.is_loopback
+        or addr.is_link_local
+        or addr.is_multicast
+        or addr.is_reserved
+        or addr.is_unspecified
+    ):
+        return True
     return any(addr in network for network in _BLOCKED_NETWORKS)
 
 
@@ -80,10 +102,19 @@ def validate_url(url: str) -> str:
 
 
 class SSRFSafeTransport(httpx.AsyncHTTPTransport):
-    """Re-check the resolved IP at connect time to defeat DNS rebinding.
+    """Connect only to an address that was validated for this request.
 
     validate_url() resolves once; a hostname whose DNS answer changes between
-    that check and the connection would otherwise slip through.
+    that check and the connection would otherwise slip through. Re-resolving
+    here is not sufficient on its own — the socket layer would resolve a third
+    time, and a rebinding server can return a public address to both of our
+    lookups and a private one to that final resolution.
+
+    So the validated address is substituted into the URL and the connection is
+    pinned to it. The original hostname is carried in the Host header and in
+    the TLS SNI extension, which httpcore passes through as `server_hostname`,
+    so certificate verification stays bound to the real hostname rather than
+    to the literal IP.
     """
 
     async def handle_async_request(self, request):
@@ -92,12 +123,21 @@ class SSRFSafeTransport(httpx.AsyncHTTPTransport):
             infos = socket.getaddrinfo(hostname, None, socket.AF_UNSPEC)
         except socket.gaierror as exc:
             raise httpx.ConnectError(f"DNS resolution failed for {hostname}") from exc
+        if not infos:
+            raise httpx.ConnectError(f"no address returned for {hostname}")
         for info in infos:
             addr = ipaddress.ip_address(info[4][0])
             if _blocked_ip(addr):
                 raise httpx.ConnectError(
                     f"SSRF blocked: {hostname} resolved to internal IP {addr}"
                 )
+
+        # Every answer passed, so pinning to the first cannot select a blocked
+        # address. Host must be captured before the URL is rewritten.
+        pinned = ipaddress.ip_address(infos[0][4][0])
+        request.headers["Host"] = request.url.netloc.decode("ascii")
+        request.extensions = {**request.extensions, "sni_hostname": hostname}
+        request.url = request.url.copy_with(host=str(pinned))
         return await super().handle_async_request(request)
 
 ORIGIN_BACKEND = os.environ.get("ORIGIN_BACKEND", "").rstrip("/")
