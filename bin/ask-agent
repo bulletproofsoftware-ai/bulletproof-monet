@@ -1,0 +1,127 @@
+#!/bin/bash
+# ask-agent — Query Claude with a conductor agent persona as system prompt
+# Parallel to ask-ref but for conductor plugin agents.
+# Pin cwd+HOME: `claude` derives its projects/<slug> dir from the working
+# directory. Without this, sessions are written under one slug dir and
+# resumed under another -> "No conversation found" on a live transcript.
+
+# shellcheck source=lib/monet-env.sh
+. "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/../lib/monet-env.sh"
+cd "$MONET_HOME" || exit 1
+export PATH="/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin:$PATH"
+#
+# Usage:
+#   ask-agent <agent-name> "your question here"
+#   echo "your question" | ask-agent <agent-name>
+#   ask-agent --list
+#
+# Uses sonnet by default (agents need stronger reasoning than haiku).
+# Override with ASK_MODEL env var.
+
+set -euo pipefail
+
+# Agent personas live in the operator's Claude Code configuration, not in this
+# repo. Point MONET_AGENTS_DIR at your own directory to enable the /ciso,
+# /devops etc. commands; without it this tool degrades to a clear message.
+AGENTS_DIR="${MONET_AGENTS_DIR:-$HOME/.claude/plugins/local/conductor/agents}"
+MODEL="${ASK_MODEL:-sonnet}"
+
+usage() {
+    cat <<'EOF'
+Usage: ask-agent <agent-name> [question]
+       echo "question" | ask-agent <agent-name>
+       ask-agent --list
+
+Query Claude with a conductor agent persona.
+Fast, no CC overhead. Agent file used as system prompt.
+
+Names use short form (omit "conductor-" prefix):
+  ask-agent ciso "review this architecture"
+  ask-agent advisor "should I use Redis or Memcached?"
+
+Environment:
+  ASK_MODEL   Model to use (default: sonnet). Options: haiku, sonnet, opus
+EOF
+    exit 0
+}
+
+# The agent library is optional and lives outside this repo. Degrade to a clear
+# message rather than an error: the Telegram router calls this, and a non-zero
+# exit would fail the whole message.
+require_agents_dir() {
+    if [[ ! -d "$AGENTS_DIR" ]]; then
+        echo "Agent personas are not configured. Set MONET_AGENTS_DIR to a directory of agent .md files (looked in: $AGENTS_DIR)."
+        exit 0
+    fi
+}
+
+list_agents() {
+    require_agents_dir
+    echo "Available agent personas:"
+    echo
+    for f in "$AGENTS_DIR"/conductor-*.md; do
+        [[ -f "$f" ]] || continue
+        basename=$(basename "$f" .md)
+        short=${basename#conductor-}
+        desc=$(awk '/^description:/{sub(/^description: */, ""); print; exit}' "$f" 2>/dev/null || echo "")
+        printf "  %-22s %s\n" "$short" "${desc:0:65}"
+    done
+    exit 0
+}
+
+# Resolve short name to full agent file path
+find_agent() {
+    local name="$1"
+    local full="$AGENTS_DIR/conductor-${name}.md"
+    local exact="$AGENTS_DIR/${name}.md"
+
+    if [[ -f "$full" ]]; then
+        echo "$full"
+    elif [[ -f "$exact" ]]; then
+        echo "$exact"
+    else
+        return 1
+    fi
+}
+
+# Parse args
+[[ $# -eq 0 ]] && usage
+[[ "$1" == "--help" || "$1" == "-h" ]] && usage
+[[ "$1" == "--list" || "$1" == "-l" ]] && list_agents
+
+AGENT_NAME="$1"
+shift
+
+require_agents_dir
+AGENT_FILE=$(find_agent "$AGENT_NAME") || {
+    echo "ERROR: Agent '$AGENT_NAME' not found." >&2
+    echo "Run 'ask-agent --list' to see available agents." >&2
+    exit 1
+}
+
+# Get question from args or stdin
+if [[ $# -gt 0 ]]; then
+    QUESTION="$*"
+elif [[ ! -t 0 ]]; then
+    QUESTION=$(cat)
+else
+    echo "ERROR: No question provided. Pass as argument or pipe via stdin." >&2
+    exit 1
+fi
+
+# Strip YAML frontmatter from agent file to temp file for system prompt
+# (agent prompts can be 25KB+ which exceeds shell arg limits)
+TMPFILE=$(mktemp)
+trap 'rm -f "$TMPFILE"' EXIT
+awk 'BEGIN{skip=0} /^---$/{skip++; next} skip<2{next} {print}' "$AGENT_FILE" > "$TMPFILE"
+
+# Unset CLAUDECODE to allow running from within a CC session
+unset CLAUDECODE
+
+# Call Claude in print mode with system prompt from file
+exec claude -p \
+    --model "$MODEL" \
+    --output-format text \
+    --dangerously-skip-permissions \
+    --system-prompt "$(cat "$TMPFILE")" \
+    "$QUESTION"

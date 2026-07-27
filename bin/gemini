@@ -1,0 +1,9 @@
+#!/bin/bash
+# gemini -> Antigravity CLI (agy). Google deprecated Gemini CLI 2026-06-18.
+# Injects monet keyring env (agy reads its persisted OAuth token from the
+# gnome-keyring on monet session bus) + --dangerously-skip-permissions (ex -yolo).
+# shellcheck source=lib/monet-env.sh
+. "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/../lib/monet-env.sh"
+export XDG_RUNTIME_DIR="/run/user/$(id -u)"
+export DBUS_SESSION_BUS_ADDRESS="unix:path=/run/user/$(id -u)/bus"
+exec "$MONET_HOME"/.local/bin/agy --dangerously-skip-permissions "$@"

@@ -1,0 +1,83 @@
+# Environment files with secrets
+.env
+docker/claude-memory/.env
+
+# Rendered artifacts from install.sh (systemd units, nginx conf, crontab)
+build/
+
+# Python venv for the webhook receiver, created by install.sh step 7
+webhook-venv/
+
+# Node modules
+node_modules/
+mcp/claude-memory-mcp/node_modules/
+mcp/claude-memory-mcp/dist/
+
+# Runtime state
+*.lock
+*-state
+*.pid
+.monet-liveness
+reminders.json
+
+# Temp/working directories
+sms-images/
+tg-images/
+tg-audio/
+screenshots/
+bg-jobs/
+images/
+logs/
+data/
+obsidian-outbox/
+
+# Monet HOME artifacts (pulled by rsync, not part of project)
+.bash_logout
+.bash_profile
+.bashrc
+.claude_aliases
+.claude.json
+.claude-server-settings.local.json
+.claude/
+# Rendered by install.sh from claude/settings.json.template
+claude/settings.json
+.gemini/
+.npm/
+.n8n-mcp/
+.venvs/
+.cache/
+.local/
+.config/
+.ssh/
+
+# OS files
+.DS_Store
+Thumbs.db
+
+# Editor
+*.swp
+*.swo
+*~
+
+# SSL certs
+*.pem
+*.key
+*.crt
+
+# Backups
+*.bak*
+
+# Auto-generated workflow docs (may contain credentials)
+docs/workflows/
+__pycache__/
+*.pyc
+backups/
+.conductor/change-log.jsonl
+
+# Internal workstream planning + conductor orchestration state. These are the
+# productization workstream's own records: TODO/ quotes every owner identifier it
+# was written to remove, and conductor-state.json's baseline_measurements name the
+# owner's home town and SSH port in its key names. Neither is product
+# documentation, and both are kept locally and in git history.
+TODO/
+conductor-state.json

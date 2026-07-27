@@ -1,0 +1,51 @@
+# bulletproof-monet — scheduled jobs.
+#
+# install.sh renders this into build/monet.crontab, substituting @MONET_HOME@ and
+# the daily-briefing schedule. To install by hand instead:
+#
+#   MONET_HOME=/path/to/your/checkout
+#   sed -e "s|@MONET_HOME@|$MONET_HOME|g" \
+#       -e "s|@BRIEFING_MIN@|30|g" -e "s|@BRIEFING_HOUR@|7|g" \
+#       cron/monet-crontab.example | crontab -
+#
+# Set MONET_CHAT_ID to your own Telegram chat id (see docs/INSTALL.md) before
+# installing; jobs that deliver to Telegram are commented out until you do.
+
+MONET_HOME=@MONET_HOME@
+SHELL=/bin/bash
+PATH=/usr/local/bin:/usr/bin:/bin
+
+# Watchdog — kill stuck processes, every minute
+* * * * * $MONET_HOME/monet-watchdog.sh >> $MONET_HOME/logs/watchdog.log 2>&1
+
+# Reminder checker — every minute
+* * * * * $MONET_HOME/monet-remind.sh >> $MONET_HOME/logs/remind.log 2>&1
+
+# Daily briefing — rendered from BRIEFING_TIME and BRIEFING_TIMEZONE in .env.
+# The entry below fires on the cron daemon's own clock; CRON_TZ makes it fire in
+# YOUR timezone instead. The briefing is OPT-IN: monet-pulse.sh exits immediately
+# unless BRIEFING_ENABLED=true, so leaving this line installed costs nothing.
+CRON_TZ=@BRIEFING_TZ@
+@BRIEFING_MIN@ @BRIEFING_HOUR@ * * * $MONET_HOME/monet-pulse.sh >> $MONET_HOME/logs/pulse.log 2>&1
+# Everything below runs on the daemon's default timezone again.
+CRON_TZ=UTC
+
+# Agent-managed scheduler — every minute
+* * * * * $MONET_HOME/monet-cron.sh >> $MONET_HOME/logs/cron.log 2>&1
+
+# Skill harvester (learning loop) — 4x/day
+17 */6 * * * $MONET_HOME/monet-skill-harvest.sh >> $MONET_HOME/logs/harvest.log 2>&1
+
+# Overnight research queue drain — 07:00 UTC
+0 7 * * * $MONET_HOME/monet-research-overnight.sh >> $MONET_HOME/logs/research-overnight.log 2>&1
+
+# Nightly skill scoring
+30 8 * * * $MONET_HOME/scripts/skill-score.py >> $MONET_HOME/logs/skill-score.log 2>&1
+
+# Daily budget watch (Twilio + API thresholds)
+0 14 * * * $MONET_HOME/scripts/budget-watch.py >> $MONET_HOME/logs/budget.log 2>&1
+
+# --- Telegram-delivering digests: uncomment and set your chat id first ---
+# 0 13 1 * * $MONET_HOME/scripts/skill-coverage-audit.py --deliver $MONET_CHAT_ID >> $MONET_HOME/logs/skill-audit.log 2>&1
+# 15 13 * * 1 $MONET_HOME/scripts/n8n-cost.py --deliver $MONET_CHAT_ID >> $MONET_HOME/logs/n8n-cost.log 2>&1
+# 30 13 * * 1 $MONET_HOME/scripts/n8n-dead.py --deliver $MONET_CHAT_ID >> $MONET_HOME/logs/n8n-dead.log 2>&1

@@ -1,0 +1,129 @@
+#!/bin/bash
+# ask-ref — Query Claude with a reference document as system prompt
+# Generic engine for Tier 2 prompt scripts.
+# Pin cwd+HOME: `claude` derives its projects/<slug> dir from the working
+# directory. Without this, sessions are written under one slug dir and
+# resumed under another -> "No conversation found" on a live transcript.
+
+# shellcheck source=lib/monet-env.sh
+. "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/../lib/monet-env.sh"
+cd "$MONET_HOME" || exit 1
+export PATH="/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin:$PATH"
+#
+# Usage:
+#   ask-ref <ref-name> "your question here"
+#   echo "your question" | ask-ref <ref-name>
+#   ask-ref --list
+#
+# Searches both active skills and archived skills for reference docs.
+# Uses haiku by default for speed/cost. Override with ASK_MODEL env var.
+
+set -euo pipefail
+
+# Skill reference docs live in the operator's Claude Code configuration, not in
+# this repo. MONET_SKILLS_DIR (also read by bin/skill-review) overrides it.
+SKILLS_DIR="${MONET_SKILLS_DIR:-$HOME/.claude/skills}"
+ARCHIVE_DIR="${MONET_SKILLS_DIR:-$HOME/.claude/skills}/archive"
+MODEL="${ASK_MODEL:-haiku}"
+
+usage() {
+    cat <<'EOF'
+Usage: ask-ref <ref-name> [question]
+       echo "question" | ask-ref <ref-name>
+       ask-ref --list
+
+Query Claude with a skill reference doc as context.
+Fast, cheap, no CC overhead. Searches active and archived skills.
+
+Environment:
+  ASK_MODEL   Model to use (default: haiku). Options: haiku, sonnet, opus
+
+Examples:
+  ask-ref n8n-code-javascript "How do I aggregate items in a Code node?"
+  ask-ref obsidian "What's the syntax for embedding a PDF?"
+  echo "Design a dashboard for metrics" | ask-ref ui-design
+EOF
+    exit 0
+}
+
+list_refs() {
+    echo "Available references:"
+    echo
+    # Active skills
+    for dir in "$SKILLS_DIR"/*/; do
+        name=$(basename "$dir")
+        [[ "$name" == "archive" ]] && continue
+        skill_file="$dir/SKILL.md"
+        [[ -f "$skill_file" ]] || continue
+        desc=$(awk '/^description:/{sub(/^description: */, ""); print; exit}' "$skill_file" 2>/dev/null || echo "")
+        printf "  %-30s %s\n" "$name" "${desc:0:60}"
+    done
+    # Archived skills (available as references)
+    if [[ -d "$ARCHIVE_DIR" ]]; then
+        echo
+        echo "Archived references:"
+        for dir in "$ARCHIVE_DIR"/*/; do
+            name=$(basename "$dir")
+            skill_file="$dir/SKILL.md"
+            [[ -f "$skill_file" ]] || continue
+            desc=$(awk '/^description:/{sub(/^description: */, ""); print; exit}' "$skill_file" 2>/dev/null || echo "")
+            printf "  %-30s %s\n" "$name" "${desc:0:60}"
+        done
+    fi
+    exit 0
+}
+
+# Resolve a reference name to its SKILL.md path
+# Searches active first, then archive
+find_ref() {
+    local name="$1"
+    local active="$SKILLS_DIR/$name/SKILL.md"
+    local archived="$ARCHIVE_DIR/$name/SKILL.md"
+
+    if [[ -f "$active" ]]; then
+        echo "$active"
+    elif [[ -f "$archived" ]]; then
+        echo "$archived"
+    else
+        return 1
+    fi
+}
+
+# Parse args
+[[ $# -eq 0 ]] && usage
+[[ "$1" == "--help" || "$1" == "-h" ]] && usage
+[[ "$1" == "--list" || "$1" == "-l" ]] && list_refs
+
+REF_NAME="$1"
+shift
+
+# Find reference file (active or archived)
+SKILL_FILE=$(find_ref "$REF_NAME") || {
+    echo "ERROR: Reference '$REF_NAME' not found in active or archived skills." >&2
+    echo "Run 'ask-ref --list' to see available references." >&2
+    exit 1
+}
+
+# Get question from args or stdin
+if [[ $# -gt 0 ]]; then
+    QUESTION="$*"
+elif [[ ! -t 0 ]]; then
+    QUESTION=$(cat)
+else
+    echo "ERROR: No question provided. Pass as argument or pipe via stdin." >&2
+    exit 1
+fi
+
+# Strip YAML frontmatter from skill file for cleaner system prompt
+SYSTEM_PROMPT=$(awk 'BEGIN{skip=0} /^---$/{skip++; next} skip<2{next} {print}' "$SKILL_FILE")
+
+# Unset CLAUDECODE to allow running from within a CC session
+unset CLAUDECODE
+
+# Call Claude in print mode
+exec claude -p \
+    --model "$MODEL" \
+    --output-format text \
+    --dangerously-skip-permissions \
+    --system-prompt "$SYSTEM_PROMPT" \
+    "$QUESTION"

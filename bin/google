@@ -1,0 +1,31 @@
+#!/bin/bash
+# google — Search Google via Gemini CLI and summarize results
+export PATH="/usr/local/bin:/opt/homebrew/bin:$HOME/.local/bin:$PATH"
+# Usage: google "your search query"
+#        echo "query" | google
+#
+# Uses Gemini's built-in Google Search grounding for real-time results.
+# Returns a concise summary, not raw links.
+
+set -euo pipefail
+
+# Get query from args or stdin
+if [[ $# -gt 0 ]]; then
+    QUERY="$*"
+elif [[ ! -t 0 ]]; then
+    QUERY=$(cat)
+else
+    echo "Usage: google <search query>" >&2
+    echo "  google \"latest Docker security vulnerabilities\"" >&2
+    echo "  google \"n8n version 1.80 release notes\"" >&2
+    exit 1
+fi
+
+exec gemini -p "Search Google for: ${QUERY}
+
+Summarize the top results concisely. Include:
+- Key findings (bullet points)
+- Source URLs for the most relevant results
+- Date of information if relevant
+
+Be direct and factual. No preamble."

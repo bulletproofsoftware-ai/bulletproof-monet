@@ -1,0 +1,79 @@
+#!/bin/bash
+# monet-queue — disk-backed FIFO job queue for Monet async pipeline.
+# Job dir shape matches monet-bg-runner.sh (bg-jobs contract).
+set -uo pipefail
+# shellcheck source=lib/monet-env.sh
+. "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/../lib/monet-env.sh"
+QDIR="${MONET_QUEUE_DIR:-${MONET_HOME}/queue}"
+LOCK="$QDIR/.claim.lock"
+mkdir -p "$QDIR"
+
+cmd="${1:-}"; shift || true
+new_id() { echo "q$(date +%s)-$$-$RANDOM"; }
+
+case "$cmd" in
+  enqueue)
+    chat_id="${1:?chat_id}"; prompt="${2:?prompt}"; session_id="${3:-}"
+    jid=$(new_id); jd="$QDIR/$jid"; mkdir -p "$jd"
+    printf '%s' "$prompt"  > "$jd/prompt"
+    printf '%s' "$chat_id" > "$jd/chat_id"
+    [ -n "$session_id" ] && printf '%s' "$session_id" > "$jd/session_id"
+    date +%s > "$jd/enqueued"
+    echo "queued" > "$jd/status"
+    echo "$jid"
+    ;;
+  claim)
+    # The claim must be mutually exclusive: without a lock two workers can
+    # select and claim the same job. Prefer flock; fall back to an atomic
+    # mkdir lock where flock is unavailable (stock macOS, minimal containers)
+    # so the claim is never performed unlocked.
+    _have_flock=0
+    command -v flock >/dev/null 2>&1 && _have_flock=1
+    if [ "$_have_flock" = "1" ]; then
+      exec 8>"$LOCK"
+      flock 8
+    else
+      # mkdir is atomic on every POSIX filesystem: exactly one caller wins.
+      _mklock="$QDIR/.claim.mklock"
+      _waited=0
+      until mkdir "$_mklock" 2>/dev/null; do
+        # Break a lock orphaned by a killed worker.
+        if [ "$_waited" -ge 100 ]; then rmdir "$_mklock" 2>/dev/null || true; _waited=0; fi
+        sleep 0.05; _waited=$((_waited+1))
+      done
+      trap 'rmdir "$_mklock" 2>/dev/null || true' EXIT
+    fi
+
+    oldest=""; oldest_ts=9999999999
+    for d in "$QDIR"/q*; do
+      [ -d "$d" ] || continue
+      [ "$(cat "$d/status" 2>/dev/null)" = "queued" ] || continue
+      ts=$(cat "$d/enqueued" 2>/dev/null || echo 9999999999)
+      if [ "$ts" -lt "$oldest_ts" ]; then oldest_ts=$ts; oldest="$d"; fi
+    done
+    if [ -n "$oldest" ]; then
+      echo "claimed" > "$oldest/status"
+      basename "$oldest"
+    fi
+
+    if [ "$_have_flock" = "1" ]; then
+      flock -u 8
+    else
+      rmdir "$_mklock" 2>/dev/null || true
+      trap - EXIT
+    fi
+    ;;
+  position)
+    jid="${1:?job_id}"; pos=0; rank=0
+    while read -r ts d; do
+      rank=$((rank+1))
+      [ "$(basename "$d")" = "$jid" ] && { pos=$rank; break; }
+    done < <(for d in "$QDIR"/q*; do
+                [ -d "$d" ] || continue
+                [ "$(cat "$d/status" 2>/dev/null)" = "queued" ] || continue
+                echo "$(cat "$d/enqueued" 2>/dev/null || echo 0) $d"
+             done | sort -n)
+    echo "$pos"
+    ;;
+  *) echo "usage: monet-queue {enqueue|claim|position} ..." >&2; exit 2 ;;
+esac

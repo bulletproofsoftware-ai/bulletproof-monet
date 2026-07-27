@@ -1,0 +1,92 @@
+{
+  "updatedAt": "2026-03-21T15:30:21.682Z",
+  "createdAt": "2026-03-21T13:15:37.012Z",
+  "id": "hierarchical-abstraction",
+  "name": "Memory: Hierarchical Abstraction",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "trigger",
+      "name": "Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 4 * * 0"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "code",
+      "name": "Abstraction Pipeline",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "jsCode": "\nconst QDRANT_URL = 'http://qdrant:6333';\nconst QDRANT_API_KEY = process.env.QDRANT_API_KEY || '';\nconst OLLAMA_URL = 'http://host.docker.internal:11434';\n\nasync function qdrantScroll(collection, filter, limit=100) {\n  const body = {limit, with_payload: true, with_vector: false};\n  if (filter) body.filter = filter;\n  const r = await fetch(`${QDRANT_URL}/collections/${collection}/points/scroll`, {\n    method: 'POST', headers: {'api-key': QDRANT_API_KEY, 'Content-Type': 'application/json'},\n    body: JSON.stringify(body)\n  });\n  const d = await r.json();\n  return d.result?.points || [];\n}\n\nasync function qdrantStore(collection, id, vector, payload) {\n  await fetch(`${QDRANT_URL}/collections/${collection}/points`, {\n    method: 'PUT', headers: {'api-key': QDRANT_API_KEY, 'Content-Type': 'application/json'},\n    body: JSON.stringify({points: [{id, vector, payload}]})\n  });\n}\n\nasync function qdrantUpdate(collection, ids, payload) {\n  await fetch(`${QDRANT_URL}/collections/${collection}/points/payload`, {\n    method: 'POST', headers: {'api-key': QDRANT_API_KEY, 'Content-Type': 'application/json'},\n    body: JSON.stringify({payload, points: ids})\n  });\n}\n\nasync function embed(text) {\n  const r = await fetch(`${OLLAMA_URL}/api/embed`, {\n    method: 'POST', headers: {'Content-Type': 'application/json'},\n    body: JSON.stringify({model: 'nomic-embed-text', input: text})\n  });\n  const d = await r.json();\n  return d.embeddings?.[0] || null;\n}\n\nfunction uuid() { return crypto.randomUUID(); }\n\n// Scan recent learnings (facts) from past 7 days\nconst learnings = await qdrantScroll('learnings', null, 200);\nconst now = Date.now();\nconst recent = learnings.filter(l => {\n  const created = new Date(l.payload?.created_at || 0).getTime();\n  return (now - created) < 7 * 24 * 60 * 60 * 1000;\n});\n\n// Group by tags/project for principle extraction\nconst groups = {};\nfor (const l of recent) {\n  const project = l.payload?.project || 'global';\n  if (!groups[project]) groups[project] = [];\n  groups[project].push(l);\n}\n\nlet principlesCreated = 0;\nfor (const [project, items] of Object.entries(groups)) {\n  if (items.length < 3) continue; // need 3+ facts to form a principle\n\n  // Store as a principle candidate\n  const contents = items.map(i => i.payload?.content || '').join(' | ');\n  const principleContent = 'Principle from ' + items.length + ' learnings in ' + project + ': ' + contents.slice(0, 500);\n  const vec = await embed(principleContent);\n  if (vec) {\n    const pid = uuid();\n    await qdrantStore('procedures', pid, vec, {\n      content: principleContent, type: 'principle', project,\n      source_count: items.length, source_ids: items.map(i => i.id),\n      created_at: new Date().toISOString(), abstraction_tier: 'principle',\n      auto_generated: true\n    });\n    principlesCreated++;\n  }\n}\n\nreturn [{json: {recent_learnings: recent.length, groups: Object.keys(groups).length, principles_created: principlesCreated}}];\n"
+      }
+    }
+  ],
+  "connections": {
+    "Schedule": {
+      "main": [
+        [
+          {
+            "node": "Abstraction Pipeline",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/New_York"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": null,
+  "versionId": "e51104ed-7e1d-4f65-870b-8b73dedf9015",
+  "activeVersionId": "e51104ed-7e1d-4f65-870b-8b73dedf9015",
+  "versionCounter": 14,
+  "triggerCount": 1,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-03-21T15:29:37.437Z",
+      "createdAt": "2026-03-21T15:29:37.437Z",
+      "role": "workflow:owner",
+      "workflowId": "hierarchical-abstraction",
+      "projectId": "iRM29sKlF8cYkleS",
+      "project": {
+        "updatedAt": "2026-02-13T14:17:27.938Z",
+        "createdAt": "2026-02-01T18:19:47.522Z",
+        "id": "iRM29sKlF8cYkleS",
+        "name": "Claude Admin <admin@claude.local>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "05ae2561-64fa-40fc-8e62-92f94f3c4680"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

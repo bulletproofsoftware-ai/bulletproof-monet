@@ -1,0 +1,192 @@
+#!/usr/bin/env python3
+"""monet-graph — Qdrant-derived knowledge graph for Monet (PRD #43).
+
+Builds an on-the-fly topic/skill/project graph from the memories Monet already
+stores in Qdrant — no separate graph database. Given a topic it:
+
+  1. embeds the topic (Ollama nomic-embed-text) and pulls the most relevant
+     memories across claude_memories + learnings + trajectories,
+  2. aggregates their `tags` and `project` fields into ranked neighbors
+     (related topics / skills / projects),
+  3. finds a "non-obvious cross-domain link" — a tag that co-occurs with the
+     topic across two *different* projects, i.e. a bridge between domains.
+
+Runs on c2 as the monet user (host-local Qdrant + Ollama). Output is plain
+text formatted for Telegram. Invoked by monet-tg.sh for `/graph <topic>`.
+
+Usage:  monet-graph "<topic>"
+"""
+import os
+import sys
+import json
+import urllib.request
+from collections import Counter, defaultdict
+
+QDRANT_URL = os.environ.get("QDRANT_URL", "http://127.0.0.1:6334")
+OLLAMA_URL = os.environ.get("OLLAMA_URL", "http://127.0.0.1:11434")
+EMBED_MODEL = "nomic-embed-text"
+COLLECTIONS = ["claude_memories", "learnings", "trajectories"]
+SEARCH_LIMIT = 40
+SCORE_THRESHOLD = 0.35
+# tags that are organisational noise, not real topics/skills/projects
+STOPTAGS = {
+    "idea", "backlog", "pending", "note", "misc", "general", "todo",
+    "session-extraction", "session-analyzer-auto", "resume-state",
+    "session-summary", "critical", "important",
+}
+
+
+def _is_noise_tag(tl):
+    """True for organisational noise: stoptags, dates (2026-02 / 2026-02-14)."""
+    if tl in STOPTAGS or len(tl) < 2:
+        return True
+    head = tl[:7]
+    return len(head) == 7 and head[:4].isdigit() and head[4] == "-" and head[5:7].isdigit()
+
+
+def _qdrant_key():
+    """Read the Qdrant API key from env or the claude-memory MCP .env."""
+    k = os.environ.get("QDRANT_API_KEY", "")
+    if k:
+        return k
+    for path in ("~/mcp-servers/.env",
+                 os.path.expanduser("your compose directory/.env")):
+        try:
+            with open(path) as fh:
+                for line in fh:
+                    if line.startswith("QDRANT_API_KEY="):
+                        return line.split("=", 1)[1].strip().strip('"').strip("'")
+        except OSError:
+            continue
+    return ""
+
+
+QDRANT_KEY = _qdrant_key()
+
+
+def _post(url, payload, headers=None, timeout=10):
+    h = {"Content-Type": "application/json"}
+    if headers:
+        h.update(headers)
+    req = urllib.request.Request(url, method="POST",
+                                 data=json.dumps(payload).encode(), headers=h)
+    return json.load(urllib.request.urlopen(req, timeout=timeout))
+
+
+def embed(text):
+    """Return the embedding vector for text, or None on failure."""
+    try:
+        r = _post(f"{OLLAMA_URL}/api/embeddings",
+                  {"model": EMBED_MODEL, "prompt": text[:2000]}, timeout=12)
+        return r.get("embedding")
+    except Exception:
+        return None
+
+
+def search(collection, vector):
+    """Vector-search a collection; return list of (score, payload)."""
+    try:
+        r = _post(f"{QDRANT_URL}/collections/{collection}/points/search",
+                  {"vector": vector, "limit": SEARCH_LIMIT,
+                   "score_threshold": SCORE_THRESHOLD, "with_payload": True},
+                  headers={"api-key": QDRANT_KEY}, timeout=12)
+        return [(h.get("score", 0), h.get("payload", {}))
+                for h in r.get("result", [])]
+    except Exception:
+        return []
+
+
+def _short_project(p):
+    """Normalise a project field to a short, human label."""
+    if not p:
+        return "unscoped"
+    p = str(p)
+    if "/" in p:
+        p = p.rstrip("/").split("/")[-1]
+    return p or "unscoped"
+
+
+def build_graph(topic):
+    vec = embed(topic)
+    if not vec:
+        return None
+
+    hits = []
+    for col in COLLECTIONS:
+        hits.extend(search(col, vec))
+    if not hits:
+        return {"topic": topic, "empty": True}
+
+    qterms = {t.lower() for t in topic.replace("-", " ").split() if len(t) > 2}
+
+    tag_score = Counter()          # tag -> summed relevance
+    tag_projects = defaultdict(set)  # tag -> set of projects it appears in
+    project_score = Counter()
+    types = Counter()
+
+    for score, pl in hits:
+        proj = _short_project(pl.get("project"))
+        project_score[proj] += score
+        types[pl.get("type", "?")] += 1
+        for tag in pl.get("tags", []) or []:
+            tl = str(tag).lower()
+            if tl in qterms or _is_noise_tag(tl):
+                continue
+            tag_score[tl] += score
+            tag_projects[tl].add(proj)
+
+    # Cross-domain bridges: tags spanning >=2 distinct projects, ranked by
+    # (number of projects bridged, then relevance).
+    bridges = sorted(
+        ((t, sorted(p)) for t, p in tag_projects.items() if len(p) >= 2),
+        key=lambda x: (len(x[1]), tag_score[x[0]]), reverse=True,
+    )
+
+    return {
+        "topic": topic,
+        "empty": False,
+        "hit_count": len(hits),
+        "neighbors": [t for t, _ in tag_score.most_common(8)],
+        "projects": [p for p, _ in project_score.most_common(5)
+                     if p != "unscoped"],
+        "types": types.most_common(),
+        "bridges": bridges[:3],
+    }
+
+
+def render(g):
+    if g is None:
+        return "🕸 Graph unavailable (embedding service offline)."
+    if g.get("empty"):
+        return f"🕸 No connections found for “{g['topic']}”. Try a broader term."
+
+    lines = [f"🕸 *Knowledge graph: {g['topic']}*",
+             f"_{g['hit_count']} related memories_", ""]
+    if g["neighbors"]:
+        lines.append("*Related topics & skills:*")
+        lines.append("• " + ", ".join(g["neighbors"]))
+    if g["projects"]:
+        lines.append("")
+        lines.append("*Appears across projects:*")
+        lines.append("• " + ", ".join(g["projects"]))
+    if g["bridges"]:
+        lines.append("")
+        lines.append("*Unexpected connections:*")
+        for tag, projs in g["bridges"]:
+            lines.append(f"• *{tag}* bridges {' ↔ '.join(projs[:3])}")
+    else:
+        lines.append("")
+        lines.append("_No cross-domain bridges surfaced for this topic._")
+    return "\n".join(lines)
+
+
+def main():
+    if len(sys.argv) < 2 or not sys.argv[1].strip():
+        print("Usage: monet-graph \"<topic>\"", file=sys.stderr)
+        sys.exit(1)
+    topic = " ".join(sys.argv[1:]).strip()
+    print(render(build_graph(topic)))
+
+
+if __name__ == "__main__":
+    main()

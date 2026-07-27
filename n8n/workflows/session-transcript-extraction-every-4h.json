@@ -1,0 +1,462 @@
+{
+  "updatedAt": "2026-03-22T16:59:30.923Z",
+  "createdAt": "2026-03-21T14:34:04.739Z",
+  "id": "session-extraction",
+  "name": "Session Transcript Extraction (Every 4h)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "trigger",
+      "name": "Every 4 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 */4 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "scroll_qdrant",
+      "name": "Scroll Qdrant",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        220,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:6334/collections/session_transcripts/points/scroll",
+        "authentication": "none",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api-key",
+              "value": "={{ $env.QDRANT_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "{\"limit\":20,\"with_payload\":true,\"with_vector\":false,\"filter\":{\"must_not\":[{\"key\":\"processed\",\"match\":{\"value\":true} } ] } }",
+        "options": {}
+      }
+    },
+    {
+      "id": "extract_points",
+      "name": "Extract Points",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const response = $input.first().json;\nconst points = response.result?.points || [];\nif (points.length === 0) return [];\nreturn points.map(p => ({ json: { id: p.id, ...p.payload } }));"
+      }
+    },
+    {
+      "id": "loop_transcripts",
+      "name": "Loop Transcripts",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        660,
+        300
+      ],
+      "parameters": {
+        "batchSize": 1
+      }
+    },
+    {
+      "id": "build_prompt",
+      "name": "Build Prompt",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const item = $input.first().json;\nconst transcript = (item.transcript || '').slice(0, 30000);\nconst prompt = `Analyze this Claude Code session transcript. Extract ONLY items worth storing as persistent memories.\n\nExtract:\n- User preferences (tools, approaches, styles they prefer or reject)\n- Important decisions (architecture, technology choices, trade-offs made)\n- Corrections the user gave (\"don't do X\", \"use Y instead\", \"that's wrong because...\")\n- Project-specific facts (configurations, conventions, constraints)\n- Personal context that would help in future sessions\n\nDO NOT extract:\n- Routine coding tasks or bug fixes (the code itself is the record)\n- One-time requests that won't recur\n- Information already in code, docs, or git history\n- Tool outputs or error messages\n\nFor each memory, output as a JSON array:\n[{\"content\":\"Specific memory (1-2 sentences)\",\"type\":\"preference|fact|context|decision\",\"tags\":[\"tag1\"],\"project\":\"project_name or global\"}]\n\nIf no memories worth extracting, output: []\n\nSession transcript:\n${transcript}`;\n\nreturn [{\n  json: {\n    model: 'claude-haiku-4-5-20251001',\n    max_tokens: 2000,\n    messages: [{ role: 'user', content: prompt }]\n  }\n}];"
+      }
+    },
+    {
+      "id": "call_anthropic",
+      "name": "Call Anthropic",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        300
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "https://api.anthropic.com/v1/messages",
+        "authentication": "none",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "x-api-key",
+              "value": "={{ $env.ANTHROPIC_API_KEY }}"
+            },
+            {
+              "name": "anthropic-version",
+              "value": "2023-06-01"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify($json) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "parse_memories",
+      "name": "Parse Memories",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1320,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const apiResp = $input.first().json;\nconst text = apiResp.content?.[0]?.text || '[]';\nlet memories = [];\ntry {\n  const match = text.match(/\\[[\\s\\S]*\\]/);\n  if (match) memories = JSON.parse(match[0]);\n} catch { memories = []; }\n\nconst transcriptId = $('Loop Transcripts').first().json.id;\nconst project = $('Loop Transcripts').first().json.project || 'unknown';\nconst validMemories = memories.filter(m => m.content);\n\nif (validMemories.length === 0) {\n  return [{ json: { transcript_id: transcriptId, _skip: true } }];\n}\n\nreturn validMemories.map(mem => ({\n  json: {\n    transcript_id: transcriptId,\n    content: mem.content,\n    type: mem.type || 'fact',\n    tags: mem.tags || [],\n    project: mem.project || project\n  }\n}));"
+      }
+    },
+    {
+      "id": "has_memories",
+      "name": "Has Memories",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2.2,
+      "position": [
+        1540,
+        300
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "version": 2,
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "check-skip",
+              "operator": {
+                "type": "boolean",
+                "operation": "true",
+                "singleValue": true
+              },
+              "leftValue": "={{ $json._skip }}",
+              "rightValue": ""
+            }
+          ]
+        },
+        "options": {}
+      }
+    },
+    {
+      "id": "get_embedding",
+      "name": "Get Embedding",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1760,
+        200
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:11434/api/embeddings",
+        "authentication": "none",
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({model:'nomic-embed-text',prompt:$json.content}) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "build_point",
+      "name": "Build Qdrant Point",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1980,
+        200
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const embedding = $json.embedding;\nconst mem = $('Has Memories').item.json;\nif (!embedding || !mem.content) return { json: {} };\n\nconst uuid = 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, c => {\n  const r = Math.random() * 16 | 0;\n  return (c === 'x' ? r : (r & 0x3 | 0x8)).toString(16);\n});\n\nreturn {\n  json: {\n    transcript_id: mem.transcript_id,\n    point: {\n      id: uuid,\n      vector: embedding,\n      payload: {\n        content: mem.content,\n        type: mem.type || 'fact',\n        tags: mem.tags || [],\n        project: mem.project || 'unknown',\n        source: 'session-extraction',\n        created_at: new Date().toISOString(),\n        sensitivity: 'internal'\n      }\n    }\n  }\n};"
+      }
+    },
+    {
+      "id": "store_point",
+      "name": "Store Point",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2200,
+        200
+      ],
+      "parameters": {
+        "method": "PUT",
+        "url": "http://host.docker.internal:6334/collections/claude_memories/points",
+        "authentication": "none",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api-key",
+              "value": "={{ $env.QDRANT_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({points:[$json.point]}) }}",
+        "options": {}
+      }
+    },
+    {
+      "id": "summarize",
+      "name": "Summarize Stored",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        2420,
+        200
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const items = $input.all();\nconst transcriptId = items[0]?.json?.transcript_id || $('Loop Transcripts').first().json.id;\nreturn [{ json: { transcript_id: transcriptId, stored: items.length } }];"
+      }
+    },
+    {
+      "id": "mark_processed",
+      "name": "Mark Processed",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2200,
+        500
+      ],
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:6334/collections/session_transcripts/points/payload",
+        "authentication": "none",
+        "sendHeaders": true,
+        "specifyHeaders": "keypair",
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api-key",
+              "value": "={{ $env.QDRANT_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "contentType": "json",
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({payload:{processed:true},points:[$('Loop Transcripts').first().json.id]}) }}",
+        "options": {}
+      }
+    }
+  ],
+  "connections": {
+    "Every 4 Hours": {
+      "main": [
+        [
+          {
+            "node": "Scroll Qdrant",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Scroll Qdrant": {
+      "main": [
+        [
+          {
+            "node": "Extract Points",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Extract Points": {
+      "main": [
+        [
+          {
+            "node": "Loop Transcripts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Loop Transcripts": {
+      "main": [
+        [],
+        [
+          {
+            "node": "Build Prompt",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Prompt": {
+      "main": [
+        [
+          {
+            "node": "Call Anthropic",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Call Anthropic": {
+      "main": [
+        [
+          {
+            "node": "Parse Memories",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Parse Memories": {
+      "main": [
+        [
+          {
+            "node": "Has Memories",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Memories": {
+      "main": [
+        [
+          {
+            "node": "Mark Processed",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Get Embedding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get Embedding": {
+      "main": [
+        [
+          {
+            "node": "Build Qdrant Point",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Build Qdrant Point": {
+      "main": [
+        [
+          {
+            "node": "Store Point",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Point": {
+      "main": [
+        [
+          {
+            "node": "Summarize Stored",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Summarize Stored": {
+      "main": [
+        [
+          {
+            "node": "Mark Processed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Mark Processed": {
+      "main": [
+        [
+          {
+            "node": "Loop Transcripts",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "timezone": "America/New_York",
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false
+  },
+  "staticData": {
+    "node:Every 4 Hours": {
+      "recurrenceRules": []
+    }
+  },
+  "meta": null,
+  "pinData": null,
+  "versionId": "1717f6cb-1a00-4eb8-a5d3-7be35de9fe6c",
+  "tags": []
+}

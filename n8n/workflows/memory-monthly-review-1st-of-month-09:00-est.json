@@ -1,0 +1,311 @@
+{
+  "updatedAt": "2026-03-21T14:44:02.366Z",
+  "createdAt": "2026-03-21T14:43:59.029Z",
+  "id": "monthly-review",
+  "name": "Memory Monthly Review (1st of Month 09:00 EST)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "trigger",
+      "name": "1st of Month 9AM EST",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 14 1 * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "expiring",
+      "name": "Expiring Soon",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        250,
+        100
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const collections = ['claude_memories','short_term_memory','working_memory','learnings','procedures','trajectories','episodes'];\nconst apiKey = $env.QDRANT_API_KEY;\nlet allPoints = [];\nfor (const col of collections) {\n  try {\n    const resp = await fetch(`http://localhost:6334/collections/${col}/points/scroll`, {\n      method: 'POST',\n      headers: { 'api-key': apiKey, 'Content-Type': 'application/json' },\n      body: JSON.stringify({ limit: 1000, with_payload: true, with_vector: false, filter: { must_not: [{ is_empty: { key: 'expires_at' } }] } })\n    });\n    if (resp.ok) {\n      const data = await resp.json();\n      const pts = (data.result?.points || []).map(p => ({ ...p, _collection: col }));\n      allPoints = allPoints.concat(pts);\n    }\n  } catch {}\n}\nreturn [{ json: { result: { points: allPoints } } }];"
+      }
+    },
+    {
+      "id": "neveraccessed",
+      "name": "Never Accessed",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        250,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const collections = ['claude_memories','short_term_memory','working_memory','learnings','procedures','trajectories','episodes'];\nconst apiKey = $env.QDRANT_API_KEY;\nconst sixtyDaysAgo = new Date(Date.now() - 60 * 24 * 60 * 60 * 1000);\nlet stalePoints = [];\nfor (const col of collections) {\n  try {\n    const resp = await fetch(`http://localhost:6334/collections/${col}/points/scroll`, {\n      method: 'POST',\n      headers: { 'api-key': apiKey, 'Content-Type': 'application/json' },\n      body: JSON.stringify({ limit: 1000, with_payload: true, with_vector: false })\n    });\n    if (resp.ok) {\n      const data = await resp.json();\n      const pts = (data.result?.points || []).filter(p => {\n        const created = p.payload?.created_at;\n        return (!p.payload?.access_count || p.payload.access_count === 0) && created && new Date(created) < sixtyDaysAgo;\n      }).map(p => ({ ...p, _collection: col }));\n      stalePoints = stalePoints.concat(pts);\n    }\n  } catch {}\n}\nreturn [{ json: { result: { points: stalePoints } } }];"
+      }
+    },
+    {
+      "id": "auditstores",
+      "name": "Audit Sensitive Stores",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        250,
+        500
+      ],
+      "continueOnFail": true,
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:6334/collections/audit_log/points/scroll",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api-key",
+              "value": "={{ $env.QDRANT_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"limit\":1000,\"with_payload\":true,\"with_vector\":false,\"filter\":{\"must\":[{\"key\":\"action\",\"match\":{\"value\":\"store\"}}]}}"
+      }
+    },
+    {
+      "id": "auditredact",
+      "name": "Audit Redactions",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        250,
+        700
+      ],
+      "continueOnFail": true,
+      "parameters": {
+        "method": "POST",
+        "url": "http://localhost:6334/collections/audit_log/points/scroll",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api-key",
+              "value": "={{ $env.QDRANT_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"limit\":1000,\"with_payload\":true,\"with_vector\":false,\"filter\":{\"must\":[{\"key\":\"action\",\"match\":{\"value\":\"redact\"}}]}}"
+      }
+    },
+    {
+      "id": "merge",
+      "name": "Merge All Data",
+      "type": "n8n-nodes-base.merge",
+      "typeVersion": 3,
+      "position": [
+        550,
+        300
+      ],
+      "parameters": {
+        "mode": "append",
+        "numberInputs": 4
+      }
+    },
+    {
+      "id": "generate",
+      "name": "Generate Report",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        800,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const items = $input.all();\nconst now = new Date();\nconst monthName = now.toLocaleString('en-US', { month: 'long', year: 'numeric' });\nconst thirtyDaysFromNow = new Date(now.getTime() + 30 * 24 * 60 * 60 * 1000);\nconst sixtyDaysAgo = new Date(now.getTime() - 60 * 24 * 60 * 60 * 1000);\nconst monthAgo = new Date(now.getTime() - 30 * 24 * 60 * 60 * 1000);\n\n// Parse data from the 4 HTTP requests\nconst expiringData = items[0]?.json?.result?.points || [];\nconst allMemories = items[1]?.json?.result?.points || [];\nconst auditStores = items[2]?.json?.result?.points || [];\nconst auditRedactions = items[3]?.json?.result?.points || [];\n\n// Expiring within 30 days\nconst expiringSoon = expiringData.filter(p => {\n  const exp = p.payload?.expires_at;\n  return exp && new Date(exp) <= thirtyDaysFromNow && new Date(exp) > now;\n});\n\n// Never accessed + older than 60 days\nconst neverAccessed = allMemories.filter(p => {\n  const created = p.payload?.created_at;\n  return (!p.payload?.access_count || p.payload.access_count === 0) &&\n    created && new Date(created) < sixtyDaysAgo;\n});\n\n// Sensitive stores this month\nconst sensitiveStores = auditStores.filter(p => {\n  const ts = p.payload?.timestamp;\n  const sens = p.payload?.sensitivity || p.payload?.details?.sensitivity;\n  return ts && new Date(ts) > monthAgo &&\n    (sens === 'sensitive' || sens === 'restricted');\n});\n\n// Redactions this month\nconst recentRedactions = auditRedactions.filter(p => {\n  const ts = p.payload?.timestamp;\n  return ts && new Date(ts) > monthAgo;\n});\n\n// Count by sensitivity\nconst bySensitivity = {};\nallMemories.forEach(p => {\n  const s = p.payload?.sensitivity || 'unclassified';\n  bySensitivity[s] = (bySensitivity[s] || 0) + 1;\n});\n\n// Build markdown\nlet md = `# Memory Review \u2014 ${monthName}\\n\\n`;\n\nmd += `## Expiring Soon (act within 30 days)\\n\\n`;\nif (expiringSoon.length === 0) {\n  md += `No sensitive memories expiring in the next 30 days.\\n\\n`;\n} else {\n  md += `| ID | Preview | Sensitivity | Created | Expires |\\n`;\n  md += `|----|---------|-------------|---------|---------|\\n`;\n  expiringSoon.forEach(p => {\n    const preview = (p.payload?.content || '').slice(0, 50).replace(/\\|/g, '/');\n    md += `| ${String(p.id).slice(0, 8)}... | \"${preview}\" | ${p.payload?.sensitivity || '?'} | ${(p.payload?.created_at || '?').slice(0, 10)} | ${(p.payload?.expires_at || '?').slice(0, 10)} |\\n`;\n  });\n  md += `\\nActions: Promote to internal (keep forever) or let expire.\\n\\n`;\n}\n\nmd += `## Never Accessed (candidates for deletion)\\n\\n`;\nif (neverAccessed.length === 0) {\n  md += `No stale memories found.\\n\\n`;\n} else {\n  md += `| ID | Preview | Type | Created | Project |\\n`;\n  md += `|----|---------|------|---------|---------|\\n`;\n  neverAccessed.slice(0, 20).forEach(p => {\n    const preview = (p.payload?.content || '').slice(0, 50).replace(/\\|/g, '/');\n    md += `| ${String(p.id).slice(0, 8)}... | \"${preview}\" | ${p.payload?.type || '?'} | ${(p.payload?.created_at || '?').slice(0, 10)} | ${p.payload?.project || '?'} |\\n`;\n  });\n  if (neverAccessed.length > 20) md += `\\n...and ${neverAccessed.length - 20} more\\n`;\n  md += `\\n`;\n}\n\nmd += `## Sensitive Activity This Month\\n\\n`;\nmd += `- ${sensitiveStores.length} sensitive/restricted memories stored\\n`;\nmd += `- ${recentRedactions.length} redactions performed\\n\\n`;\n\nmd += `## Stats\\n\\n`;\nmd += `- Total memories scanned: ${allMemories.length}\\n`;\nmd += `- By sensitivity: ${Object.entries(bySensitivity).map(([k, v]) => `${k} (${v})`).join(', ')}\\n`;\nmd += `- Audit log entries scanned: ${auditStores.length + auditRedactions.length}\\n`;\n\nreturn [{ json: { markdown: md, filename: `${now.getFullYear()}-${String(now.getMonth()+1).padStart(2,'0')} Memory Review.md`, stats: { expiring_soon: expiringSoon.length, never_accessed: neverAccessed.length, sensitive_stores: sensitiveStores.length, redactions: recentRedactions.length, total: allMemories.length, by_sensitivity: bySensitivity } } }];"
+      }
+    },
+    {
+      "id": "obsidian",
+      "name": "Save to Obsidian",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1050,
+        300
+      ],
+      "continueOnFail": true,
+      "notes": "Writes to Obsidian REST API. Requires Obsidian Local REST API plugin. Adjust URL/port and vault path as needed.",
+      "parameters": {
+        "method": "PUT",
+        "url": "=http://localhost:27124/vault/Memory Reviews/{{ $json.filename }}",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "Content-Type",
+              "value": "text/markdown"
+            },
+            {
+              "name": "Authorization",
+              "value": "Bearer {{ $env.OBSIDIAN_REST_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "string",
+        "body": "={{ $json.markdown }}"
+      }
+    }
+  ],
+  "connections": {
+    "1st of Month 9AM EST": {
+      "main": [
+        [
+          {
+            "node": "Expiring Soon",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Never Accessed",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Audit Sensitive Stores",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Audit Redactions",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Expiring Soon": {
+      "main": [
+        [
+          {
+            "node": "Merge All Data",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Never Accessed": {
+      "main": [
+        [
+          {
+            "node": "Merge All Data",
+            "type": "main",
+            "index": 1
+          }
+        ]
+      ]
+    },
+    "Audit Sensitive Stores": {
+      "main": [
+        [
+          {
+            "node": "Merge All Data",
+            "type": "main",
+            "index": 2
+          }
+        ]
+      ]
+    },
+    "Audit Redactions": {
+      "main": [
+        [
+          {
+            "node": "Merge All Data",
+            "type": "main",
+            "index": 3
+          }
+        ]
+      ]
+    },
+    "Merge All Data": {
+      "main": [
+        [
+          {
+            "node": "Generate Report",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Report": {
+      "main": [
+        [
+          {
+            "node": "Save to Obsidian",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "timezone": "America/New_York"
+  },
+  "staticData": {
+    "node:1st of Month 9AM EST": {
+      "recurrenceRules": []
+    }
+  },
+  "meta": null,
+  "pinData": null,
+  "versionId": "c9d862b3-f52d-4bee-96f5-fde0c9a34f23",
+  "activeVersionId": "c9d862b3-f52d-4bee-96f5-fde0c9a34f23",
+  "versionCounter": 8,
+  "triggerCount": 1,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-03-21T14:43:59.029Z",
+      "createdAt": "2026-03-21T14:43:59.029Z",
+      "role": "workflow:owner",
+      "workflowId": "monthly-review",
+      "projectId": "iRM29sKlF8cYkleS",
+      "project": {
+        "updatedAt": "2026-02-13T14:17:27.938Z",
+        "createdAt": "2026-02-01T18:19:47.522Z",
+        "id": "iRM29sKlF8cYkleS",
+        "name": "Claude Admin <admin@claude.local>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "05ae2561-64fa-40fc-8e62-92f94f3c4680"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

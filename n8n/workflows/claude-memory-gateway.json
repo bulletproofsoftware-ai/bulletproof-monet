@@ -1,0 +1,570 @@
+{
+  "updatedAt": "2026-02-01T18:26:43.178Z",
+  "createdAt": "2026-02-01T18:26:07.398Z",
+  "id": "MSvaRPMrLFrDQ4jQ",
+  "name": "Claude Memory Gateway",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "parameters": {
+        "httpMethod": "POST",
+        "path": "memory",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "id": "webhook",
+      "name": "Memory Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        250,
+        300
+      ],
+      "webhookId": "claude-memory"
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "api-key-check",
+              "leftValue": "={{ $json.headers['x-api-key'] }}",
+              "rightValue": "={{ $env.WEBHOOK_API_KEY }}",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "auth-check",
+      "name": "Validate API Key",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ error: 'Unauthorized', message: 'Invalid or missing API key' }) }}",
+        "options": {
+          "responseCode": 401,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "unauthorized-response",
+      "name": "Unauthorized Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        650,
+        500
+      ]
+    },
+    {
+      "parameters": {
+        "rules": {
+          "values": [
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.body.action }}",
+                    "rightValue": "store",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "store"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.body.action }}",
+                    "rightValue": "recall",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "recall"
+            },
+            {
+              "conditions": {
+                "options": {
+                  "caseSensitive": true,
+                  "leftValue": "",
+                  "typeValidation": "strict"
+                },
+                "conditions": [
+                  {
+                    "leftValue": "={{ $json.body.action }}",
+                    "rightValue": "rag_search",
+                    "operator": {
+                      "type": "string",
+                      "operation": "equals"
+                    }
+                  }
+                ],
+                "combinator": "and"
+              },
+              "renameOutput": true,
+              "outputKey": "rag_search"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "action-router",
+      "name": "Route Action",
+      "type": "n8n-nodes-base.switch",
+      "typeVersion": 3,
+      "position": [
+        650,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:11434/api/embeddings",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'nomic-embed-text', prompt: $json.body.content }) }}",
+        "options": {}
+      },
+      "id": "store-embedding",
+      "name": "Generate Store Embedding",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        900,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:11434/api/embeddings",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'nomic-embed-text', prompt: $json.body.query }) }}",
+        "options": {}
+      },
+      "id": "recall-embedding",
+      "name": "Generate Recall Embedding",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        900,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:11434/api/embeddings",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'nomic-embed-text', prompt: $json.body.query }) }}",
+        "options": {}
+      },
+      "id": "rag-embedding",
+      "name": "Generate RAG Embedding",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        900,
+        450
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Get the original webhook data and embedding\nconst webhookData = $('Memory Webhook').first().json;\nconst embedding = $input.first().json.embedding;\n\n// Generate UUID using crypto\nfunction generateUUID() {\n  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {\n    const r = Math.random() * 16 | 0;\n    const v = c === 'x' ? r : (r & 0x3 | 0x8);\n    return v.toString(16);\n  });\n}\n\n// Get ID from request body or generate new one\nconst pointId = webhookData.body.id || generateUUID();\n\nreturn {\n  pointId: pointId,\n  embedding: embedding,\n  content: webhookData.body.content,\n  type: webhookData.body.type || 'memory',\n  tags: webhookData.body.tags || [],\n  created_at: new Date().toISOString()\n};"
+      },
+      "id": "prepare-store",
+      "name": "Prepare Store Request",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1050,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "http://qdrant:6333/collections/claude_memories/points",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api-key",
+              "value": "={{ $env.QDRANT_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ points: [{ id: $json.pointId, vector: $json.embedding, payload: { content: $json.content, type: $json.type, created_at: $json.created_at, tags: $json.tags } }] }) }}",
+        "options": {}
+      },
+      "id": "store-qdrant",
+      "name": "Store in Qdrant",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1200,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://qdrant:6333/collections/claude_memories/points/search",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api-key",
+              "value": "={{ $env.QDRANT_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ vector: $json.embedding, limit: $('Memory Webhook').item.json.body.limit || 5, with_payload: true, score_threshold: $('Memory Webhook').item.json.body.threshold || 0.7 }) }}",
+        "options": {}
+      },
+      "id": "search-qdrant",
+      "name": "Search Qdrant",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://qdrant:6333/collections/obsidian_docs/points/search",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api-key",
+              "value": "={{ $env.QDRANT_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ vector: $json.embedding, limit: $('Memory Webhook').item.json.body.limit || 10, with_payload: true, score_threshold: $('Memory Webhook').item.json.body.threshold || 0.5 }) }}",
+        "options": {}
+      },
+      "id": "search-rag-qdrant",
+      "name": "Search Obsidian Docs",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1100,
+        450
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, message: \"Memory stored successfully\", id: $('Prepare Store Request').first().json.pointId }) }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "store-response",
+      "name": "Store Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1400,
+        150
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, memories: $json.result.map(r => ({ id: r.id, score: r.score, content: r.payload.content, type: r.payload.type, created_at: r.payload.created_at, tags: r.payload.tags })) }) }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "recall-response",
+      "name": "Recall Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1300,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ JSON.stringify({ success: true, documents: $json.result.map(r => ({ id: r.id, score: r.score, file_path: r.payload.file_path, title: r.payload.title, content: r.payload.content, chunk_index: r.payload.chunk_index, total_chunks: r.payload.total_chunks })) }) }}",
+        "options": {
+          "responseCode": 200,
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      },
+      "id": "rag-response",
+      "name": "RAG Success Response",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        1300,
+        450
+      ]
+    }
+  ],
+  "connections": {
+    "Memory Webhook": {
+      "main": [
+        [
+          {
+            "node": "Validate API Key",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Validate API Key": {
+      "main": [
+        [
+          {
+            "node": "Route Action",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Unauthorized Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Action": {
+      "main": [
+        [
+          {
+            "node": "Generate Store Embedding",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Generate Recall Embedding",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Generate RAG Embedding",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Store Embedding": {
+      "main": [
+        [
+          {
+            "node": "Prepare Store Request",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Store Request": {
+      "main": [
+        [
+          {
+            "node": "Store in Qdrant",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate Recall Embedding": {
+      "main": [
+        [
+          {
+            "node": "Search Qdrant",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate RAG Embedding": {
+      "main": [
+        [
+          {
+            "node": "Search Obsidian Docs",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store in Qdrant": {
+      "main": [
+        [
+          {
+            "node": "Store Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Qdrant": {
+      "main": [
+        [
+          {
+            "node": "Recall Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Search Obsidian Docs": {
+      "main": [
+        [
+          {
+            "node": "RAG Success Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": null,
+  "versionId": "b149ce47-54f3-4a75-9b17-7c5c0b411032",
+  "activeVersionId": "b149ce47-54f3-4a75-9b17-7c5c0b411032",
+  "versionCounter": 90,
+  "triggerCount": 1,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-02-01T18:26:07.398Z",
+      "createdAt": "2026-02-01T18:26:07.398Z",
+      "role": "workflow:owner",
+      "workflowId": "MSvaRPMrLFrDQ4jQ",
+      "projectId": "iRM29sKlF8cYkleS",
+      "project": {
+        "updatedAt": "2026-02-13T14:17:27.938Z",
+        "createdAt": "2026-02-01T18:19:47.522Z",
+        "id": "iRM29sKlF8cYkleS",
+        "name": "Claude Admin <admin@claude.local>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "05ae2561-64fa-40fc-8e62-92f94f3c4680"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

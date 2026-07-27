@@ -1,0 +1,21 @@
+version: 2
+updates:
+  # Rewrites the SHA pins in .github/workflows/*.yml and updates the trailing
+  # version comment, so the hygiene job's pin check keeps passing. This is the
+  # answer to the standard objection that SHA pins rot.
+  - package-ecosystem: github-actions
+    directory: "/"
+    schedule: { interval: monthly }
+    commit-message: { prefix: "ci" }
+  - package-ecosystem: npm
+    directory: "/mcp/claude-memory-mcp"
+    schedule: { interval: monthly }
+    commit-message: { prefix: "deps" }
+  - package-ecosystem: pip
+    directory: "/"
+    schedule: { interval: monthly }
+    commit-message: { prefix: "deps" }
+  - package-ecosystem: docker
+    directory: "/docker/markdown-for-agents"
+    schedule: { interval: monthly }
+    commit-message: { prefix: "deps" }

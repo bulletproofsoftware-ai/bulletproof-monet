@@ -1,0 +1,19 @@
+[Unit]
+Description=Monet REST Management API
+After=network.target
+
+[Service]
+Type=simple
+User=@MONET_USER@
+Group=@MONET_USER@
+WorkingDirectory=@MONET_HOME@
+EnvironmentFile=@MONET_HOME@/.env
+Environment=MONET_HOME=@MONET_HOME@
+ExecStart=/usr/bin/python3 @MONET_HOME@/api/monet_api.py
+Restart=on-failure
+RestartSec=5
+StandardOutput=append:@MONET_LOG_DIR@/monet-api.log
+StandardError=append:@MONET_LOG_DIR@/monet-api.log
+
+[Install]
+WantedBy=multi-user.target

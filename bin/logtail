@@ -1,0 +1,99 @@
+#!/bin/bash
+# logtail <source> [n] [filter] — read-only log tail formatted for Telegram (PRD #23).
+# Maps friendly source names to log paths, tails the last N lines (optionally
+# filtered), and formats the result for a Telegram message. No SSH session needed.
+#
+#   logtail monet-tg 20 errors   -> last 20 lines of the TG log matching errors
+#   logtail pulse                -> last 20 lines of the pulse log
+#   logtail cron 50 "job="       -> last 50 cron lines containing "job="
+#
+# "n" and "filter" are positional but order-tolerant: if the 2nd arg is not a
+# number it is treated as the filter and N defaults to 20.
+set -uo pipefail
+
+# shellcheck source=lib/monet-env.sh
+. "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/../lib/monet-env.sh"
+MAX_N=200
+MAX_LINE=300   # truncate very long lines so Telegram stays readable
+
+# --- source name -> log path map ---
+src_path() {
+    case "$1" in
+        monet-tg|tg|telegram) echo "/var/log/monet-tg.log" ;;
+        monet-sms|sms)        echo "/var/log/monet-sms.log" ;;
+        api|monet-api)        echo "/var/log/monet_api.log" ;;
+        watchdog)             echo "${MONET_HOME}/logs/watchdog.log" ;;
+        pulse)                echo "${MONET_HOME}/logs/pulse.log" ;;
+        cron|sched|scheduler) echo "${MONET_HOME}/logs/cron.log" ;;
+        remind|reminders)     echo "${MONET_HOME}/logs/remind.log" ;;
+        harvest|skills)       echo "${MONET_HOME}/logs/harvest.log" ;;
+        *) echo "" ;;
+    esac
+}
+
+KNOWN="monet-tg, sms, api, watchdog, pulse, cron, remind, harvest"
+
+usage() {
+    cat <<EOF
+Usage: /logtail <source> [n] [filter]
+Sources: $KNOWN
+Examples:
+  /logtail monet-tg 20 errors
+  /logtail pulse
+  /logtail cron 50 job=
+EOF
+}
+
+SRC="${1:-}"
+N="${2:-20}"
+FILTER="${3:-}"
+
+if [ -z "$SRC" ]; then usage; exit 0; fi
+
+# order-tolerant: if N isn't numeric, treat it as the filter
+case "$N" in
+    ''|*[!0-9]*) FILTER="$N"; N=20 ;;
+esac
+[ "$N" -gt "$MAX_N" ] 2>/dev/null && N=$MAX_N
+[ "$N" -lt 1 ] 2>/dev/null && N=20
+
+PATH_TO=$(src_path "$SRC")
+if [ -z "$PATH_TO" ]; then
+    echo "⚠️ Unknown log source: \"$SRC\""
+    usage
+    exit 0
+fi
+if [ ! -f "$PATH_TO" ]; then
+    echo "⚠️ Log not found: $PATH_TO"
+    exit 0
+fi
+if [ ! -r "$PATH_TO" ]; then
+    echo "⚠️ Log not readable by monet: $PATH_TO"
+    exit 0
+fi
+
+# Build the filtered tail. "errors" is a convenience alias for a severity regex.
+case "$(printf '%s' "$FILTER" | tr '[:upper:]' '[:lower:]')" in
+    error|errors|err|fail|failure)
+        LINES=$(grep -aiE 'error|fail|exception|traceback|fatal|warn' "$PATH_TO" 2>/dev/null | tail -n "$N")
+        DESC="last $N matching error/warn lines"
+        ;;
+    "")
+        LINES=$(tail -n "$N" "$PATH_TO" 2>/dev/null)
+        DESC="last $N lines"
+        ;;
+    *)
+        LINES=$(grep -aiF "$FILTER" "$PATH_TO" 2>/dev/null | tail -n "$N")
+        DESC="last $N lines matching \"$FILTER\""
+        ;;
+esac
+
+if [ -z "$LINES" ]; then
+    echo "📄 $SRC ($PATH_TO): no matching lines ($DESC)."
+    exit 0
+fi
+
+# truncate over-long lines
+LINES=$(printf '%s\n' "$LINES" | cut -c1-"$MAX_LINE")
+
+printf '📄 *%s* — %s\n`%s`\n```\n%s\n```\n' "$SRC" "$DESC" "$PATH_TO" "$LINES"

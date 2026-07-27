@@ -1,0 +1,16 @@
+[Unit]
+Description=Monet Telegram webhook receiver (FastAPI)
+After=network.target
+
+[Service]
+Type=simple
+User=@MONET_USER@
+EnvironmentFile=@MONET_HOME@/.env
+Environment=MONET_HOME=@MONET_HOME@
+WorkingDirectory=@MONET_HOME@/api
+ExecStart=@MONET_HOME@/webhook-venv/bin/uvicorn monet_webhook:app --host 127.0.0.1 --port 8093
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

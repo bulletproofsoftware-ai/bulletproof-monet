@@ -1,0 +1,4 @@
+#!/bin/bash
+# ask-n8n-py — n8n Python Code node reference
+# Wrapper around ask-ref for quick n8n Python questions
+exec ask-ref n8n-code-python "$@"

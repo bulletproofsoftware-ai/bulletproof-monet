@@ -1,0 +1,15 @@
+[Unit]
+Description=Monet async worker %i
+After=network.target
+
+[Service]
+Type=simple
+User=@MONET_USER@
+EnvironmentFile=@MONET_HOME@/.env
+Environment=MONET_HOME=@MONET_HOME@
+ExecStart=@MONET_HOME@/src/monet-worker-loop.sh %i
+Restart=always
+RestartSec=3
+
+[Install]
+WantedBy=multi-user.target

@@ -1,0 +1,4 @@
+#!/bin/bash
+# ask-security-stack — Testing & security stack reference
+# Wrapper around ask-ref for security/testing tool questions
+exec ask-ref testing-security-stack "$@"

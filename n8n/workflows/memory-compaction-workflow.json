@@ -1,0 +1,431 @@
+{
+  "updatedAt": "2026-03-21T15:30:25.269Z",
+  "createdAt": "2026-03-21T13:13:54.245Z",
+  "id": "memory-compaction-wf",
+  "name": "Memory Compaction Workflow",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "hours",
+              "hoursInterval": 6
+            }
+          ]
+        }
+      },
+      "id": "schedule-trigger",
+      "name": "Every 6 Hours",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        250,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://qdrant:6333/collections/claude_memories/points/scroll",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api-key",
+              "value": "={{ $env.QDRANT_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"limit\": 1000, \"with_payload\": true, \"with_vector\": false}",
+        "options": {}
+      },
+      "id": "get-all-memories",
+      "name": "Get All Memories",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        450,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Check if compaction is needed\nconst memories = $input.first().json.result?.points || [];\nconst threshold = 50;\n\n// Group by project\nconst byProject = {};\nfor (const mem of memories) {\n  const project = mem.payload?.project || 'global';\n  if (!byProject[project]) byProject[project] = [];\n  byProject[project].push(mem);\n}\n\n// Find projects exceeding threshold\nconst needsCompaction = [];\nfor (const [project, mems] of Object.entries(byProject)) {\n  if (mems.length > threshold) {\n    needsCompaction.push({\n      project,\n      count: mems.length,\n      memories: mems\n    });\n  }\n}\n\nreturn {\n  needsCompaction: needsCompaction.length > 0,\n  projects: needsCompaction,\n  totalMemories: memories.length,\n  threshold\n};"
+      },
+      "id": "check-threshold",
+      "name": "Check Compaction Threshold",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        650,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "needs-compaction",
+              "leftValue": "={{ $json.needsCompaction }}",
+              "rightValue": true,
+              "operator": {
+                "type": "boolean",
+                "operation": "equals"
+              }
+            }
+          ],
+          "combinator": "and"
+        },
+        "options": {}
+      },
+      "id": "if-needs-compaction",
+      "name": "Needs Compaction?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        850,
+        300
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// For each project needing compaction, identify clusters\nconst projects = $input.first().json.projects || [];\nconst clustersToProcess = [];\n\nfor (const proj of projects) {\n  // Group memories by type\n  const byType = {};\n  for (const mem of proj.memories) {\n    const type = mem.payload?.type || 'unknown';\n    if (!byType[type]) byType[type] = [];\n    byType[type].push(mem);\n  }\n  \n  // Find types with many similar memories\n  for (const [type, mems] of Object.entries(byType)) {\n    if (mems.length >= 5) {\n      // Get oldest memories for compaction\n      const sorted = mems.sort((a, b) => \n        new Date(a.payload?.created_at) - new Date(b.payload?.created_at)\n      );\n      \n      // Take oldest 50% for compaction\n      const toCompact = sorted.slice(0, Math.floor(sorted.length / 2));\n      \n      if (toCompact.length >= 3) {\n        clustersToProcess.push({\n          project: proj.project,\n          type,\n          memories: toCompact,\n          count: toCompact.length\n        });\n      }\n    }\n  }\n}\n\nreturn clustersToProcess;"
+      },
+      "id": "identify-clusters",
+      "name": "Identify Clusters",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1050,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "// Create summary for each cluster\nconst cluster = $input.first().json;\n\n// Combine memory contents\nconst contents = cluster.memories\n  .map(m => m.payload?.content)\n  .filter(Boolean);\n\n// Create summary (in production, use LLM for better summarization)\nconst summary = `[COMPACTED: ${cluster.count} ${cluster.type} memories from ${cluster.project}]\\n\\n` +\n  contents.map((c, i) => `${i+1}. ${c.substring(0, 200)}...`).join('\\n\\n');\n\nreturn {\n  project: cluster.project,\n  type: cluster.type,\n  summary,\n  originalIds: cluster.memories.map(m => m.id),\n  originalCount: cluster.count\n};"
+      },
+      "id": "create-summary",
+      "name": "Create Summary",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1250,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://host.docker.internal:11434/api/embeddings",
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ model: 'nomic-embed-text', prompt: $json.summary }) }}",
+        "options": {}
+      },
+      "id": "embed-summary",
+      "name": "Embed Summary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1450,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "jsCode": "const summaryData = $('Create Summary').first().json;\nconst embedding = $input.first().json.embedding;\n\nfunction generateUUID() {\n  return 'xxxxxxxx-xxxx-4xxx-yxxx-xxxxxxxxxxxx'.replace(/[xy]/g, function(c) {\n    const r = Math.random() * 16 | 0;\n    const v = c === 'x' ? r : (r & 0x3 | 0x8);\n    return v.toString(16);\n  });\n}\n\nreturn {\n  pointId: generateUUID(),\n  embedding,\n  summary: summaryData.summary,\n  project: summaryData.project,\n  type: summaryData.type,\n  originalIds: summaryData.originalIds,\n  originalCount: summaryData.originalCount\n};"
+      },
+      "id": "prepare-summary-store",
+      "name": "Prepare Summary Storage",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        1650,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "PUT",
+        "url": "http://qdrant:6333/collections/claude_memories/points",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api-key",
+              "value": "={{ $env.QDRANT_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ points: [{ id: $json.pointId, vector: $json.embedding, payload: { content: $json.summary, type: $json.type, project: $json.project, created_at: new Date().toISOString(), tier: 'long_term', is_compacted: true, source_count: $json.originalCount, source_ids: $json.originalIds } }] }) }}",
+        "options": {}
+      },
+      "id": "store-summary",
+      "name": "Store Summary",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1850,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "method": "POST",
+        "url": "http://qdrant:6333/collections/claude_memories/points/delete",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api-key",
+              "value": "={{ $env.QDRANT_API_KEY }}"
+            },
+            {
+              "name": "Content-Type",
+              "value": "application/json"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ points: $('Prepare Summary Storage').first().json.originalIds }) }}",
+        "options": {}
+      },
+      "id": "delete-originals",
+      "name": "Archive Originals",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        2050,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "log",
+              "name": "message",
+              "value": "={{ 'Compaction complete: ' + $('Prepare Summary Storage').first().json.originalCount + ' memories \u2192 1 summary for ' + $('Prepare Summary Storage').first().json.project }}",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "log-result",
+      "name": "Log Result",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        2250,
+        200
+      ]
+    },
+    {
+      "parameters": {
+        "assignments": {
+          "assignments": [
+            {
+              "id": "skip",
+              "name": "message",
+              "value": "No compaction needed",
+              "type": "string"
+            }
+          ]
+        },
+        "options": {}
+      },
+      "id": "skip-compaction",
+      "name": "No Compaction Needed",
+      "type": "n8n-nodes-base.set",
+      "typeVersion": 3.4,
+      "position": [
+        1050,
+        400
+      ]
+    }
+  ],
+  "connections": {
+    "Every 6 Hours": {
+      "main": [
+        [
+          {
+            "node": "Get All Memories",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Get All Memories": {
+      "main": [
+        [
+          {
+            "node": "Check Compaction Threshold",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Check Compaction Threshold": {
+      "main": [
+        [
+          {
+            "node": "Needs Compaction?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Needs Compaction?": {
+      "main": [
+        [
+          {
+            "node": "Identify Clusters",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Compaction Needed",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Identify Clusters": {
+      "main": [
+        [
+          {
+            "node": "Create Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Create Summary": {
+      "main": [
+        [
+          {
+            "node": "Embed Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Embed Summary": {
+      "main": [
+        [
+          {
+            "node": "Prepare Summary Storage",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Prepare Summary Storage": {
+      "main": [
+        [
+          {
+            "node": "Store Summary",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Store Summary": {
+      "main": [
+        [
+          {
+            "node": "Archive Originals",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Archive Originals": {
+      "main": [
+        [
+          {
+            "node": "Log Result",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1"
+  },
+  "staticData": {
+    "node:Every 6 Hours": {
+      "recurrenceRules": [
+        6
+      ]
+    }
+  },
+  "meta": null,
+  "pinData": null,
+  "versionId": "b1e57a3f-67e8-4c7c-999b-83ba20a1e95c",
+  "activeVersionId": "b1e57a3f-67e8-4c7c-999b-83ba20a1e95c",
+  "versionCounter": 19,
+  "triggerCount": 1,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-03-21T15:29:40.993Z",
+      "createdAt": "2026-03-21T15:29:40.993Z",
+      "role": "workflow:owner",
+      "workflowId": "memory-compaction-wf",
+      "projectId": "iRM29sKlF8cYkleS",
+      "project": {
+        "updatedAt": "2026-02-13T14:17:27.938Z",
+        "createdAt": "2026-02-01T18:19:47.522Z",
+        "id": "iRM29sKlF8cYkleS",
+        "name": "Claude Admin <admin@claude.local>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "05ae2561-64fa-40fc-8e62-92f94f3c4680"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

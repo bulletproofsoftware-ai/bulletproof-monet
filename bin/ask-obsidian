@@ -1,0 +1,4 @@
+#!/bin/bash
+# ask-obsidian — Obsidian markdown/vault syntax reference
+# Wrapper around ask-ref for Obsidian questions
+exec ask-ref obsidian "$@"

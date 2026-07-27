@@ -1,0 +1,96 @@
+{
+  "updatedAt": "2026-03-21T15:30:13.950Z",
+  "createdAt": "2026-03-21T13:15:40.093Z",
+  "id": "predictive-patterns",
+  "name": "Memory: Predictive Pattern Extraction",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "trigger",
+      "name": "Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 2 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "code",
+      "name": "Pattern Extraction",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "jsCode": "\nconst QDRANT_URL = 'http://qdrant:6333';\nconst QDRANT_API_KEY = process.env.QDRANT_API_KEY || '';\nconst OLLAMA_URL = 'http://host.docker.internal:11434';\n\nasync function qdrantScroll(collection, filter, limit=100) {\n  const body = {limit, with_payload: true, with_vector: false};\n  if (filter) body.filter = filter;\n  const r = await fetch(`${QDRANT_URL}/collections/${collection}/points/scroll`, {\n    method: 'POST', headers: {'api-key': QDRANT_API_KEY, 'Content-Type': 'application/json'},\n    body: JSON.stringify(body)\n  });\n  const d = await r.json();\n  return d.result?.points || [];\n}\n\nasync function qdrantStore(collection, id, vector, payload) {\n  await fetch(`${QDRANT_URL}/collections/${collection}/points`, {\n    method: 'PUT', headers: {'api-key': QDRANT_API_KEY, 'Content-Type': 'application/json'},\n    body: JSON.stringify({points: [{id, vector, payload}]})\n  });\n}\n\nasync function qdrantUpdate(collection, ids, payload) {\n  await fetch(`${QDRANT_URL}/collections/${collection}/points/payload`, {\n    method: 'POST', headers: {'api-key': QDRANT_API_KEY, 'Content-Type': 'application/json'},\n    body: JSON.stringify({payload, points: ids})\n  });\n}\n\nasync function embed(text) {\n  const r = await fetch(`${OLLAMA_URL}/api/embed`, {\n    method: 'POST', headers: {'Content-Type': 'application/json'},\n    body: JSON.stringify({model: 'nomic-embed-text', input: text})\n  });\n  const d = await r.json();\n  return d.embeddings?.[0] || null;\n}\n\nfunction uuid() { return crypto.randomUUID(); }\n\nconst trajectories = await qdrantScroll('trajectories', null, 100);\nconst now = Date.now();\nconst recent = trajectories.filter(t => {\n  const created = new Date(t.payload?.created_at || 0).getTime();\n  return (now - created) < 7 * 24 * 60 * 60 * 1000;\n});\n\n// Extract context -> memories_accessed patterns\nconst patterns = {};\nfor (const t of recent) {\n  const context = t.payload?.trigger_context || t.payload?.task_type || 'unknown';\n  const memoriesAccessed = t.payload?.memories_accessed || t.payload?.recalled_ids || [];\n  if (!Array.isArray(memoriesAccessed) || memoriesAccessed.length === 0) continue;\n\n  if (!patterns[context]) patterns[context] = {memories: {}, count: 0};\n  patterns[context].count++;\n  for (const mid of memoriesAccessed) {\n    patterns[context].memories[mid] = (patterns[context].memories[mid] || 0) + 1;\n  }\n}\n\n// Store patterns with frequency >= 2\nlet stored = 0;\nfor (const [context, data] of Object.entries(patterns)) {\n  if (data.count < 2) continue;\n\n  // Top 3 most accessed memories for this context\n  const topMemories = Object.entries(data.memories)\n    .sort((a,b) => b[1] - a[1])\n    .slice(0, 3)\n    .map(([id, freq]) => ({memory_id: id, frequency: freq}));\n\n  const vec = await embed('predictive pattern: ' + context);\n  if (vec) {\n    await qdrantStore('predictive_patterns', uuid(), vec, {\n      trigger_context: context, top_memories: topMemories,\n      occurrence_count: data.count, updated_at: new Date().toISOString()\n    });\n    stored++;\n  }\n}\n\nreturn [{json: {trajectories_analyzed: recent.length, patterns_found: Object.keys(patterns).length, stored}}];\n"
+      }
+    }
+  ],
+  "connections": {
+    "Schedule": {
+      "main": [
+        [
+          {
+            "node": "Pattern Extraction",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/New_York"
+  },
+  "staticData": {
+    "node:Schedule": {
+      "recurrenceRules": []
+    }
+  },
+  "meta": null,
+  "pinData": null,
+  "versionId": "760f064c-bc6c-4059-8bfa-1824725dd6c6",
+  "activeVersionId": "760f064c-bc6c-4059-8bfa-1824725dd6c6",
+  "versionCounter": 15,
+  "triggerCount": 1,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-03-21T15:29:30.562Z",
+      "createdAt": "2026-03-21T15:29:30.562Z",
+      "role": "workflow:owner",
+      "workflowId": "predictive-patterns",
+      "projectId": "iRM29sKlF8cYkleS",
+      "project": {
+        "updatedAt": "2026-02-13T14:17:27.938Z",
+        "createdAt": "2026-02-01T18:19:47.522Z",
+        "id": "iRM29sKlF8cYkleS",
+        "name": "Claude Admin <admin@claude.local>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "05ae2561-64fa-40fc-8e62-92f94f3c4680"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

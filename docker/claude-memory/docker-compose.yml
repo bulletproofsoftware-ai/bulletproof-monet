@@ -1,0 +1,98 @@
+# Claude Memory System - Secure Local Memory Infrastructure
+# Provides persistent memory for Claude Code with local embeddings
+
+volumes:
+  n8n_data:
+  postgres_data:
+  qdrant_data:
+  qdrant_snapshots:
+
+networks:
+  claude_backend:
+    driver: bridge
+
+services:
+  # PostgreSQL Database for n8n
+  postgres:
+    image: postgres:16-alpine
+    container_name: claude_backend_postgres
+    restart: unless-stopped
+    networks:
+      - claude_backend
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD}
+      POSTGRES_DB: ${POSTGRES_DB}
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -h localhost -U ${POSTGRES_USER} -d ${POSTGRES_DB}']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  # Qdrant Vector Database with API Key Authentication
+  qdrant:
+    # Tag verified via `docker manifest inspect qdrant/qdrant:v1.18.3`
+    # sha256:ecc81d662bb9bb734db879b94461eb44be38604fc259491d478ad7e673238a0d
+    image: qdrant/qdrant:v1.18.3
+    container_name: claude_backend_qdrant
+    restart: unless-stopped
+    user: "1000:1000"
+    networks:
+      - claude_backend
+    ports:
+      - "127.0.0.1:6334:6333"
+    environment:
+      QDRANT__SERVICE__API_KEY: ${QDRANT_API_KEY}
+      QDRANT_INIT_FILE_PATH: /qdrant/storage/.qdrant-initialized
+      QDRANT__STORAGE__TEMP_PATH: /qdrant/snapshots/tmp
+    volumes:
+      - qdrant_data:/qdrant/storage
+      - qdrant_snapshots:/qdrant/snapshots
+
+  # n8n Workflow Engine
+  n8n:
+    # Tag verified via `docker manifest inspect n8nio/n8n:2.32.5`
+    # sha256:4aa2f864c6a40864a7b00774cd403d614f11f11d51dc223751754742486d5d19
+    image: n8nio/n8n:2.32.5
+    container_name: claude_backend_n8n
+    restart: unless-stopped
+    networks:
+      - claude_backend
+    ports:
+      - "127.0.0.1:5679:5678"
+    extra_hosts:
+      # Load-bearing: lets n8n reach a host-side (or profile-started) Ollama.
+      - "host.docker.internal:host-gateway"
+    environment:
+      - DB_TYPE=postgresdb
+      - DB_POSTGRESDB_HOST=postgres
+      - DB_POSTGRESDB_PORT=5432
+      - DB_POSTGRESDB_DATABASE=${POSTGRES_DB}
+      - DB_POSTGRESDB_USER=${POSTGRES_USER}
+      - DB_POSTGRESDB_PASSWORD=${POSTGRES_PASSWORD}
+      - N8N_ENCRYPTION_KEY=${N8N_ENCRYPTION_KEY}
+      - N8N_USER_MANAGEMENT_JWT_SECRET=${N8N_USER_MANAGEMENT_JWT_SECRET}
+      - N8N_DIAGNOSTICS_ENABLED=false
+      - N8N_PERSONALIZATION_ENABLED=false
+      - N8N_SECURE_COOKIE=false
+      - N8N_TRUST_PROXY=true
+      - N8N_PUBLIC_API_ENABLED=true
+      - N8N_BLOCK_ENV_ACCESS_IN_NODE=false
+      - WEBHOOK_URL=${MONET_PUBLIC_URL}
+      # Security keys for workflow
+      - QDRANT_API_KEY=${QDRANT_API_KEY}
+      - WEBHOOK_API_KEY=${WEBHOOK_API_KEY}
+      - N8N_API_KEY=${N8N_API_KEY}
+      - N8N_MIGRATE_FS_STORAGE_PATH=true
+      # Host Ollama accessible via host.docker.internal
+      - OLLAMA_HOST=http://host.docker.internal:11434
+    volumes:
+      - n8n_data:/home/node/.n8n
+      - ./n8n/backup:/backup
+    depends_on:
+      postgres:
+        condition: service_healthy
+      qdrant:
+        condition: service_started

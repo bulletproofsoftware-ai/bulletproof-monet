@@ -1,0 +1,309 @@
+{
+  "updatedAt": "2026-03-21T14:43:55.424Z",
+  "createdAt": "2026-03-21T14:43:51.102Z",
+  "id": "daily-ttl-sweep",
+  "name": "Memory TTL Sweep (Daily 03:00 UTC)",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "trigger",
+      "name": "Daily 3AM UTC",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        300
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 3 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "listcol",
+      "name": "List Collections",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        300
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "return [\n  'claude_memories', 'short_term_memory', 'working_memory',\n  'learnings', 'procedures', 'trajectories', 'episodes',\n  'session_transcripts'\n].map(c => ({ json: { collection: c } }));"
+      }
+    },
+    {
+      "id": "loop",
+      "name": "Each Collection",
+      "type": "n8n-nodes-base.splitInBatches",
+      "typeVersion": 3,
+      "position": [
+        440,
+        300
+      ],
+      "parameters": {
+        "batchSize": 1
+      }
+    },
+    {
+      "id": "scroll",
+      "name": "Scroll Collection",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        660,
+        200
+      ],
+      "continueOnFail": true,
+      "parameters": {
+        "method": "POST",
+        "url": "=http://localhost:6334/collections/{{ $json.collection }}/points/scroll",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api-key",
+              "value": "={{ $env.QDRANT_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "{\"limit\":1000,\"with_payload\":true,\"with_vector\":false,\"filter\":{\"must_not\":[{\"is_empty\":{\"key\":\"expires_at\"}}]}}"
+      }
+    },
+    {
+      "id": "filter",
+      "name": "Filter Expired",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        880,
+        200
+      ],
+      "parameters": {
+        "mode": "runOnceForAllItems",
+        "jsCode": "const collection = $('Each Collection').first().json.collection;\nconst points = $input.first().json.result?.points || [];\nconst now = new Date();\nconst expired = points.filter(p => p.payload?.expires_at && new Date(p.payload.expires_at) < now);\nif (expired.length === 0) {\n  return [{ json: { collection, has_expired: false, count: 0, point_ids: [] } }];\n}\nreturn [{ json: {\n  collection,\n  has_expired: true,\n  count: expired.length,\n  point_ids: expired.map(p => p.id),\n  details: expired.map(p => ({\n    id: p.id,\n    sensitivity: p.payload?.sensitivity || 'unknown',\n    preview: (p.payload?.content || '').slice(0, 80)\n  }))\n} }];"
+      }
+    },
+    {
+      "id": "check",
+      "name": "Has Expired?",
+      "type": "n8n-nodes-base.if",
+      "typeVersion": 2,
+      "position": [
+        1100,
+        200
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "caseSensitive": true,
+            "leftValue": "",
+            "typeValidation": "strict"
+          },
+          "conditions": [
+            {
+              "id": "cond1",
+              "leftValue": "={{ $json.count }}",
+              "rightValue": 0,
+              "operator": {
+                "type": "number",
+                "operation": "gt"
+              }
+            }
+          ],
+          "combinator": "and"
+        }
+      }
+    },
+    {
+      "id": "delete",
+      "name": "Delete Expired",
+      "type": "n8n-nodes-base.httpRequest",
+      "typeVersion": 4.2,
+      "position": [
+        1320,
+        100
+      ],
+      "continueOnFail": true,
+      "parameters": {
+        "method": "POST",
+        "url": "=http://localhost:6334/collections/{{ $json.collection }}/points/delete",
+        "authentication": "none",
+        "sendHeaders": true,
+        "headerParameters": {
+          "parameters": [
+            {
+              "name": "api-key",
+              "value": "={{ $env.QDRANT_API_KEY }}"
+            }
+          ]
+        },
+        "sendBody": true,
+        "specifyBody": "json",
+        "jsonBody": "={{ JSON.stringify({ points: $json.point_ids }) }}"
+      }
+    },
+    {
+      "id": "noop",
+      "name": "No Expired",
+      "type": "n8n-nodes-base.noOp",
+      "typeVersion": 1,
+      "position": [
+        1320,
+        300
+      ],
+      "parameters": {}
+    }
+  ],
+  "connections": {
+    "Daily 3AM UTC": {
+      "main": [
+        [
+          {
+            "node": "List Collections",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "List Collections": {
+      "main": [
+        [
+          {
+            "node": "Each Collection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Each Collection": {
+      "main": [
+        [
+          {
+            "node": "Scroll Collection",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Scroll Collection": {
+      "main": [
+        [
+          {
+            "node": "Filter Expired",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Filter Expired": {
+      "main": [
+        [
+          {
+            "node": "Has Expired?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Expired?": {
+      "main": [
+        [
+          {
+            "node": "Delete Expired",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "No Expired",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Delete Expired": {
+      "main": [
+        [
+          {
+            "node": "Each Collection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "No Expired": {
+      "main": [
+        [
+          {
+            "node": "Each Collection",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "timezone": "UTC"
+  },
+  "staticData": {
+    "node:Daily 3AM UTC": {
+      "recurrenceRules": []
+    }
+  },
+  "meta": null,
+  "pinData": null,
+  "versionId": "b9dd7765-3b8a-49bb-b72d-862c94875239",
+  "activeVersionId": "b9dd7765-3b8a-49bb-b72d-862c94875239",
+  "versionCounter": 8,
+  "triggerCount": 1,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-03-21T14:43:51.102Z",
+      "createdAt": "2026-03-21T14:43:51.102Z",
+      "role": "workflow:owner",
+      "workflowId": "daily-ttl-sweep",
+      "projectId": "iRM29sKlF8cYkleS",
+      "project": {
+        "updatedAt": "2026-02-13T14:17:27.938Z",
+        "createdAt": "2026-02-01T18:19:47.522Z",
+        "id": "iRM29sKlF8cYkleS",
+        "name": "Claude Admin <admin@claude.local>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "05ae2561-64fa-40fc-8e62-92f94f3c4680"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

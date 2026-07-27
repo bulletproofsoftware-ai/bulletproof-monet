@@ -1,0 +1,141 @@
+{
+  "updatedAt": "2026-02-06T19:06:45.127Z",
+  "createdAt": "2026-02-06T19:00:15.333Z",
+  "id": "JL3TwotMtyHLsGT2",
+  "name": "Agent Output Visual Formatter",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "webhook-trigger",
+      "name": "Webhook Trigger",
+      "type": "n8n-nodes-base.webhook",
+      "typeVersion": 2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "path": "agent-visual-format",
+        "httpMethod": "POST",
+        "responseMode": "responseNode",
+        "options": {}
+      },
+      "webhookId": "agent-visual-format"
+    },
+    {
+      "id": "classify-content",
+      "name": "Classify Content",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const input = $input.first().json;\nconst markdown = input.body?.markdown || input.body?.content || JSON.stringify(input.body);\nconst agentType = input.body?.agent || 'unknown';\nconst title = input.body?.title || 'Agent Output';\nconst theme = input.body?.theme || 'modern-minimalist';\n\nconst sections = [];\nconst lines = markdown.split('\\n');\nlet currentSection = { type: 'narrative', heading: '', content: '', lines: [] };\nlet tableCount = 0;\nlet metricCount = 0;\nlet hasTimeline = false;\nlet hasBulletLists = false;\n\nfor (const line of lines) {\n  if (line.includes('|') && line.trim().startsWith('|')) {\n    if (currentSection.type !== 'table') {\n      if (currentSection.content) sections.push({...currentSection});\n      currentSection = { type: 'table', heading: currentSection.heading, content: '', lines: [] };\n    }\n    currentSection.lines.push(line);\n    currentSection.content += line + '\\n';\n    tableCount++;\n    continue;\n  }\n  if (/\\$[\\d,.]+[BMK]?|[\\d.]+%|[\\d.]+x\\b/.test(line) && line.length < 200) {\n    metricCount++;\n  }\n  if (line.startsWith('#')) {\n    if (currentSection.content) sections.push({...currentSection});\n    const level = line.match(/^#+/)[0].length;\n    currentSection = { type: 'narrative', heading: line.replace(/^#+\\\\s*/, ''), level, content: '', lines: [] };\n    continue;\n  }\n  if (/\\b(20[2-3]\\d|Q[1-4]|January|February|March|April|May|June|July|August|September|October|November|December)\\b/.test(line)) {\n    hasTimeline = true;\n  }\n  if (line.trim().startsWith('- ') || line.trim().startsWith('* ')) {\n    hasBulletLists = true;\n  }\n  currentSection.content += line + '\\n';\n  currentSection.lines.push(line);\n}\nif (currentSection.content) sections.push(currentSection);\n\nlet layoutType = 'article';\nif (tableCount > 10) layoutType = 'data-heavy-dashboard';\nelse if (tableCount > 3) layoutType = 'dashboard';\nelse if (metricCount > 5) layoutType = 'metrics-dashboard';\nelse if (hasTimeline && tableCount > 1) layoutType = 'report-dashboard';\n\nconst components = [];\nfor (const section of sections) {\n  if (section.type === 'table') {\n    components.push({ type: 'data-table', heading: section.heading, sortable: true });\n  } else if (section.heading && metricCount > 0) {\n    components.push({ type: 'section-card', heading: section.heading });\n  }\n}\n\nreturn [{\n  json: {\n    markdown, agentType, title, theme,\n    classification: { layoutType, tableCount, metricCount, hasTimeline, hasBulletLists, sectionCount: sections.length, components },\n    sections\n  }\n}];"
+      }
+    },
+    {
+      "id": "generate-html",
+      "name": "Generate HTML",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        440,
+        0
+      ],
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst { markdown, title, theme, classification, sections, agentType } = data;\n\nconst themes = {\n  'tech-innovation': {\n    bg: '#0f172a', surface: '#1e293b', surfaceAlt: '#334155',\n    text: '#f8fafc', textMuted: '#94a3b8', accent: '#f97316',\n    accentBg: '#f97316', success: '#22c55e', warning: '#f59e0b',\n    error: '#ef4444', border: '#475569',\n    font: \"'Space Grotesk', sans-serif\", bodyFont: \"'DM Sans', sans-serif\"\n  },\n  'modern-minimalist': {\n    bg: '#ffffff', surface: '#f8fafc', surfaceAlt: '#f1f5f9',\n    text: '#0f172a', textMuted: '#64748b', accent: '#0ea5e9',\n    accentBg: '#0ea5e9', success: '#22c55e', warning: '#f59e0b',\n    error: '#ef4444', border: '#e2e8f0',\n    font: \"'Outfit', sans-serif\", bodyFont: \"'Plus Jakarta Sans', sans-serif\"\n  },\n  'midnight-galaxy': {\n    bg: '#0c0a1d', surface: '#1a1533', surfaceAlt: '#2d2650',\n    text: '#e8e4f0', textMuted: '#9b8fc4', accent: '#a78bfa',\n    accentBg: '#7c3aed', success: '#34d399', warning: '#fbbf24',\n    error: '#f87171', border: '#3b3366',\n    font: \"'Sora', sans-serif\", bodyFont: \"'Manrope', sans-serif\"\n  }\n};\n\nconst t = themes[theme] || themes['modern-minimalist'];\n\nfunction parseTable(tableLines) {\n  const rows = tableLines.filter(l => l.trim().startsWith('|') && !l.includes('---'));\n  if (rows.length < 1) return '';\n  const parseRow = (row) => row.split('|').filter(c => c.trim()).map(c => c.trim());\n  const headers = parseRow(rows[0]);\n  const dataRows = rows.slice(1).map(parseRow);\n  let html = `<div style=\\\"overflow-x:auto;border-radius:8px;border:1px solid ${t.border}\\\">`;\n  html += '<table style=\\\"width:100%;border-collapse:collapse;font-size:14px\\\">';\n  html += '<thead><tr>';\n  headers.forEach(h => {\n    html += `<th style=\\\"padding:12px 16px;text-align:left;font-weight:600;background:${t.surfaceAlt};color:${t.text};border-bottom:2px solid ${t.border}\\\">${h}</th>`;\n  });\n  html += '</tr></thead><tbody>';\n  dataRows.forEach((row, i) => {\n    const bg = i % 2 === 0 ? t.surface : t.bg;\n    html += '<tr>';\n    row.forEach(cell => {\n      let style = `padding:10px 16px;border-bottom:1px solid ${t.border};color:${t.text};background:${bg}`;\n      if (/^\\\\+/.test(cell) || /positive|strong|low risk/i.test(cell)) style += `;color:${t.success}`;\n      if (/^-[\\\\d]/.test(cell) || /negative|weak|high risk/i.test(cell)) style += `;color:${t.error}`;\n      html += `<td style=\\\"${style}\\\">${cell}</td>`;\n    });\n    html += '</tr>';\n  });\n  html += '</tbody></table></div>';\n  return html;\n}\n\nfunction renderSection(section) {\n  if (section.type === 'table') {\n    return `<div style=\\\"margin:16px 0\\\">${section.heading ? `<h3 style=\\\"font-size:16px;font-weight:600;margin-bottom:8px;color:${t.text}\\\">${section.heading}</h3>` : ''}${parseTable(section.lines)}</div>`;\n  }\n  let content = section.content\n    .replace(/\\\\*\\\\*(.+?)\\\\*\\\\*/g, `<strong style=\\\"color:${t.text}\\\">$1</strong>`)\n    .replace(/^- (.+)$/gm, `<li style=\\\"margin:4px 0;color:${t.textMuted}\\\">$1</li>`)\n    .replace(/^\\\\* (.+)$/gm, `<li style=\\\"margin:4px 0;color:${t.textMuted}\\\">$1</li>`)\n    .replace(/(<li[^>]*>.*<\\\\/li>\\\\n?)+/g, (match) => `<ul style=\\\"padding-left:20px;margin:8px 0\\\">${match}</ul>`)\n    .replace(/\\\\[([^\\\\]]+)\\\\]\\\\(([^)]+)\\\\)/g, `<a href=\\\"$2\\\" style=\\\"color:${t.accent};text-decoration:underline\\\" target=\\\"_blank\\\">$1</a>`)\n    .replace(/\\\\n\\\\n/g, '</p><p style=\\\"margin:8px 0;line-height:1.6\\\">')\n    .replace(/\\\\n/g, '<br>');\n  const headingHtml = section.heading ?\n    `<h${section.level || 2} style=\\\"font-size:${section.level === 1 ? 24 : section.level === 2 ? 20 : 16}px;font-weight:600;margin:24px 0 12px 0;color:${t.text};font-family:${t.font}\\\">${section.heading}</h${section.level || 2}>` : '';\n  return `<div style=\\\"margin:12px 0\\\">${headingHtml}<div style=\\\"color:${t.textMuted};line-height:1.6;font-size:14px\\\"><p style=\\\"margin:8px 0\\\">${content}</p></div></div>`;\n}\n\nconst timestamp = new Date().toLocaleString('en-US', { timeZone: 'America/New_York', dateStyle: 'full', timeStyle: 'short' });\n\nconst html = `<!DOCTYPE html>\\n<html lang=\\\"en\\\">\\n<head>\\n<meta charset=\\\"UTF-8\\\">\\n<meta name=\\\"viewport\\\" content=\\\"width=device-width, initial-scale=1.0\\\">\\n<title>${title}</title>\\n<link href=\\\"https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;600;700&family=DM+Sans:wght@400;500;600&family=Outfit:wght@400;500;600;700&family=Plus+Jakarta+Sans:wght@400;500;600&family=Sora:wght@400;500;600;700&family=Manrope:wght@400;500;600&display=swap\\\" rel=\\\"stylesheet\\\">\\n<style>\\n  * { margin: 0; padding: 0; box-sizing: border-box; }\\n  body { background: ${t.bg}; color: ${t.text}; font-family: ${t.bodyFont}; }\\n  .container { max-width: 1200px; margin: 0 auto; padding: 32px 24px; }\\n  .header { margin-bottom: 32px; padding-bottom: 24px; border-bottom: 2px solid ${t.border}; }\\n  .header h1 { font-family: ${t.font}; font-size: 28px; font-weight: 700; margin-bottom: 8px; }\\n  .header .meta { font-size: 13px; color: ${t.textMuted}; }\\n  .header .meta .agent-badge { display: inline-block; padding: 2px 10px; border-radius: 12px; background: ${t.accentBg}; color: #fff; font-size: 11px; font-weight: 600; margin-left: 8px; text-transform: uppercase; }\\n  .stats-bar { display: flex; gap: 16px; margin: 20px 0; flex-wrap: wrap; }\\n  .stat-chip { padding: 8px 16px; border-radius: 8px; background: ${t.surface}; border: 1px solid ${t.border}; font-size: 13px; }\\n  .stat-chip .label { color: ${t.textMuted}; }\\n  .stat-chip .value { font-weight: 600; color: ${t.accent}; margin-left: 4px; }\\n  .content { display: grid; gap: 24px; }\\n  .section-card { background: ${t.surface}; border: 1px solid ${t.border}; border-radius: 12px; padding: 24px; }\\n  @media (max-width: 768px) { .container { padding: 16px; } .stats-bar { flex-direction: column; } }\\n  @media print { body { background: #fff; color: #000; } .section-card { border: 1px solid #ddd; } }\\n</style>\\n</head>\\n<body>\\n<div class=\\\"container\\\">\\n  <div class=\\\"header\\\">\\n    <h1>${title}</h1>\\n    <div class=\\\"meta\\\">\\n      ${timestamp}\\n      <span class=\\\"agent-badge\\\">${agentType}</span>\\n    </div>\\n  </div>\\n  <div class=\\\"stats-bar\\\">\\n    <div class=\\\"stat-chip\\\"><span class=\\\"label\\\">Layout:</span><span class=\\\"value\\\">${classification.layoutType}</span></div>\\n    <div class=\\\"stat-chip\\\"><span class=\\\"label\\\">Tables:</span><span class=\\\"value\\\">${classification.tableCount}</span></div>\\n    <div class=\\\"stat-chip\\\"><span class=\\\"label\\\">Sections:</span><span class=\\\"value\\\">${classification.sectionCount}</span></div>\\n    <div class=\\\"stat-chip\\\"><span class=\\\"label\\\">Metrics:</span><span class=\\\"value\\\">${classification.metricCount}</span></div>\\n  </div>\\n  <div class=\\\"content\\\">\\n    ${sections.map(s => `<div class=\\\"section-card\\\">${renderSection(s)}</div>`).join('\\\\n')}\\n  </div>\\n</div>\\n</body>\\n</html>`;\n\nreturn [{ json: { html, title, classification }, binary: {} }];"
+      }
+    },
+    {
+      "id": "respond-webhook",
+      "name": "Respond to Webhook",
+      "type": "n8n-nodes-base.respondToWebhook",
+      "typeVersion": 1.1,
+      "position": [
+        660,
+        0
+      ],
+      "parameters": {
+        "respondWith": "json",
+        "responseBody": "={{ { success: true, title: $json.title, classification: $json.classification, html: $json.html } }}",
+        "options": {
+          "responseHeaders": {
+            "entries": [
+              {
+                "name": "Content-Type",
+                "value": "application/json"
+              }
+            ]
+          }
+        }
+      }
+    },
+    {
+      "id": "save-html",
+      "name": "Save HTML File",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        660,
+        200
+      ],
+      "parameters": {
+        "jsCode": "const data = $input.first().json;\nconst fs = require('fs');\nconst path = require('path');\n\nconst outputDir = '/home/node/output';\ntry { fs.mkdirSync(outputDir, { recursive: true }); } catch(e) {}\n\nconst timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, 19);\nconst safeTitle = (data.title || 'output').replace(/[^a-zA-Z0-9-_]/g, '_').slice(0, 50);\nconst filename = `${safeTitle}_${timestamp}.html`;\nconst filepath = path.join(outputDir, filename);\n\nfs.writeFileSync(filepath, data.html, 'utf8');\n\nreturn [{ json: { saved: true, filepath, filename, size: data.html.length } }];"
+      }
+    }
+  ],
+  "connections": {
+    "Webhook Trigger": {
+      "main": [
+        [
+          {
+            "node": "Classify Content",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Classify Content": {
+      "main": [
+        [
+          {
+            "node": "Generate HTML",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Generate HTML": {
+      "main": [
+        [
+          {
+            "node": "Respond to Webhook",
+            "type": "main",
+            "index": 0
+          },
+          {
+            "node": "Save HTML File",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/New_York",
+    "availableInMCP": true
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": null,
+  "versionId": "a92a5afe-7d5e-4845-9531-7dfe2235138f",
+  "tags": []
+}

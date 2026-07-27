@@ -1,0 +1,18 @@
+# Optional text-to-speech dependency.
+#
+# monet-tts.sh and monet-voice.sh shell out to the `edge-tts` CLI, which drives
+# Microsoft Edge's online neural voices. It needs no API key and no account,
+# which is why it replaced the previous paid TTS provider.
+#
+# Install so the CLI lands on the PATH those two scripts export
+# ($MONET_HOME/.local/bin):
+#
+#   PYTHONUSERBASE="$MONET_HOME" pip install --user -r requirements-tts.txt
+#
+# Skip this entirely if TTS_ENABLED=false (the shipped default) -- nothing else
+# in the tree imports it.
+#
+# Pin verified in a clean venv: installs, `edge-tts --version` reports 7.2.8, and
+# `edge-tts --voice en-US-AriaNeural --text ... --write-media` produced a real
+# MPEG layer III file with no credentials of any kind present.
+edge-tts==7.2.8

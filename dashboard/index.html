@@ -1,0 +1,295 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Monet Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script>
+        tailwind.config = {
+            theme: {
+                extend: {
+                    colors: {
+                        monet: { 50: '#f0f4ff', 100: '#dbe4fe', 200: '#bfcefe', 400: '#818cf8', 500: '#6366f1', 600: '#4f46e5', 700: '#4338ca', 900: '#312e81' }
+                    }
+                }
+            }
+        }
+    </script>
+    <style>
+        body { font-family: 'SF Mono', 'Fira Code', 'Cascadia Code', monospace; background: #0f172a; color: #e2e8f0; }
+        .card { background: #1e293b; border: 1px solid #334155; border-radius: 0.75rem; }
+        .stat-value { font-size: 2rem; font-weight: 700; color: #818cf8; }
+        .stat-label { font-size: 0.75rem; color: #94a3b8; text-transform: uppercase; letter-spacing: 0.05em; }
+        .badge-up { background: #065f46; color: #6ee7b7; }
+        .badge-down { background: #7f1d1d; color: #fca5a5; }
+        .table-row:hover { background: #334155; }
+        .tab-active { border-bottom: 2px solid #818cf8; color: #818cf8; }
+        .tab-inactive { color: #64748b; }
+        .tab-inactive:hover { color: #94a3b8; }
+        #app { max-width: 1200px; margin: 0 auto; padding: 1.5rem; }
+        .spinner { border: 2px solid #334155; border-top: 2px solid #818cf8; border-radius: 50%; width: 20px; height: 20px; animation: spin 0.8s linear infinite; display: inline-block; }
+        @keyframes spin { to { transform: rotate(360deg); } }
+    </style>
+</head>
+<body>
+<div id="app">
+    <!-- Header -->
+    <div class="flex items-center justify-between mb-6">
+        <div>
+            <h1 class="text-2xl font-bold text-white">Monet</h1>
+            <p class="text-sm text-slate-400">AI Assistant Dashboard</p>
+        </div>
+        <div class="flex items-center gap-3">
+            <span id="status-dot" class="w-2 h-2 rounded-full bg-emerald-400"></span>
+            <span id="uptime" class="text-sm text-slate-400"></span>
+            <button onclick="refreshAll()" class="px-3 py-1 text-xs bg-slate-700 rounded hover:bg-slate-600">Refresh</button>
+        </div>
+    </div>
+
+    <!-- Stats Row -->
+    <div class="grid grid-cols-2 md:grid-cols-4 gap-4 mb-6">
+        <div class="card p-4">
+            <div class="stat-label">Today's Calls</div>
+            <div class="stat-value" id="calls-today">-</div>
+            <div class="text-xs text-slate-500">invocations</div>
+        </div>
+        <div class="card p-4">
+            <div class="stat-label">Input Tokens</div>
+            <div class="stat-value" id="tokens-in">-</div>
+            <div class="text-xs text-slate-500">today</div>
+        </div>
+        <div class="card p-4">
+            <div class="stat-label">Output Tokens</div>
+            <div class="stat-value" id="tokens-out">-</div>
+            <div class="text-xs text-slate-500">today</div>
+        </div>
+        <div class="card p-4">
+            <div class="stat-label">Active Sessions</div>
+            <div class="stat-value" id="session-count">-</div>
+            <div class="text-xs text-slate-500">last 24h</div>
+        </div>
+    </div>
+
+    <!-- Service Health -->
+    <div class="card p-4 mb-6">
+        <h2 class="text-sm font-semibold text-slate-300 mb-3">Services</h2>
+        <div class="flex flex-wrap gap-2" id="services"></div>
+    </div>
+
+    <!-- Tabs -->
+    <div class="flex gap-6 mb-4 border-b border-slate-700 pb-2">
+        <button class="tab-active pb-2 text-sm font-medium" onclick="switchTab('usage')">Usage</button>
+        <button class="tab-inactive pb-2 text-sm font-medium" onclick="switchTab('sessions')">Sessions</button>
+        <button class="tab-inactive pb-2 text-sm font-medium" onclick="switchTab('audit')">Audit Log</button>
+        <button class="tab-inactive pb-2 text-sm font-medium" onclick="switchTab('memory')">Memory</button>
+    </div>
+
+    <!-- Tab Content -->
+    <div id="tab-usage" class="card">
+        <div class="p-4">
+            <h3 class="text-sm font-semibold text-slate-300 mb-3">7-Day Usage History</h3>
+            <div class="overflow-x-auto">
+                <table class="w-full text-sm">
+                    <thead><tr class="text-left text-slate-500 border-b border-slate-700">
+                        <th class="pb-2 pr-4">Date</th>
+                        <th class="pb-2 pr-4">Calls</th>
+                        <th class="pb-2 pr-4">Input Tokens</th>
+                        <th class="pb-2">Output Tokens</th>
+                    </tr></thead>
+                    <tbody id="usage-table"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div id="tab-sessions" class="card hidden">
+        <div class="p-4">
+            <h3 class="text-sm font-semibold text-slate-300 mb-3">Active Sessions (24h)</h3>
+            <div id="sessions-list"></div>
+        </div>
+    </div>
+
+    <div id="tab-audit" class="card hidden">
+        <div class="p-4">
+            <div class="flex items-center justify-between mb-3">
+                <h3 class="text-sm font-semibold text-slate-300">Recent Events</h3>
+                <select id="audit-filter" onchange="loadAudit()" class="text-xs bg-slate-800 border border-slate-600 rounded px-2 py-1">
+                    <option value="">All channels</option>
+                    <option value="tg">Telegram</option>
+                    <option value="sms">SMS</option>
+                    <option value="cron">Cron</option>
+                    <option value="governor">Governor</option>
+                </select>
+            </div>
+            <div class="overflow-x-auto">
+                <table class="w-full text-xs">
+                    <thead><tr class="text-left text-slate-500 border-b border-slate-700">
+                        <th class="pb-2 pr-3">Time</th>
+                        <th class="pb-2 pr-3">Channel</th>
+                        <th class="pb-2 pr-3">Action</th>
+                        <th class="pb-2 pr-3">Tokens</th>
+                        <th class="pb-2">Details</th>
+                    </tr></thead>
+                    <tbody id="audit-table"></tbody>
+                </table>
+            </div>
+        </div>
+    </div>
+
+    <div id="tab-memory" class="card hidden">
+        <div class="p-4">
+            <h3 class="text-sm font-semibold text-slate-300 mb-3">Qdrant Collections</h3>
+            <div id="memory-stats"></div>
+        </div>
+    </div>
+</div>
+
+<script>
+const API_BASE = window.location.origin.includes('localhost') || window.location.origin.includes('127.0.0.1')
+    ? 'http://127.0.0.1:8091'
+    : window.location.origin + '/api';
+
+const API_KEY = localStorage.getItem('monet_api_key') || '';
+
+function api(path) {
+    const headers = {};
+    if (API_KEY) headers['Authorization'] = `Bearer ${API_KEY}`;
+    return fetch(`${API_BASE}${path}`, { headers }).then(r => r.json()).catch(() => null);
+}
+
+function fmt(n) { return n != null ? n.toLocaleString() : '-'; }
+function fmtTime(ts) {
+    if (!ts) return '-';
+    const d = new Date(typeof ts === 'number' ? ts * 1000 : ts);
+    return d.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit', hour12: false });
+}
+
+async function loadHealth() {
+    const d = await api('/health');
+    if (!d) return;
+    document.getElementById('uptime').textContent = d.uptime_human;
+    const svc = document.getElementById('services');
+    svc.innerHTML = '';
+    for (const [name, info] of Object.entries(d.services || {})) {
+        const up = info.status === 'up';
+        svc.innerHTML += `<span class="px-2 py-1 rounded text-xs font-medium ${up ? 'badge-up' : 'badge-down'}">${name}: ${info.status}</span>`;
+    }
+}
+
+async function loadUsage() {
+    const d = await api('/usage?days=7');
+    if (!d) return;
+    const t = d.today || {};
+    document.getElementById('calls-today').textContent = fmt(t.invocations || 0);
+    document.getElementById('tokens-in').textContent = fmt(t.input_tokens || 0);
+    document.getElementById('tokens-out').textContent = fmt(t.output_tokens || 0);
+
+    const tbody = document.getElementById('usage-table');
+    tbody.innerHTML = '';
+    for (const row of (d.history || [])) {
+        tbody.innerHTML += `<tr class="table-row border-b border-slate-800">
+            <td class="py-2 pr-4">${row.date}</td>
+            <td class="py-2 pr-4">${fmt(row.invocations)}</td>
+            <td class="py-2 pr-4">${fmt(row.input_tokens)}</td>
+            <td class="py-2 text-monet-400">${fmt(row.output_tokens)}</td>
+        </tr>`;
+    }
+}
+
+async function loadSessions() {
+    const d = await api('/sessions?hours=24');
+    if (!d) return;
+    document.getElementById('session-count').textContent = d.count || 0;
+    const el = document.getElementById('sessions-list');
+    if (!d.sessions || d.sessions.length === 0) {
+        el.innerHTML = '<p class="text-slate-500 text-sm">No active sessions</p>';
+        return;
+    }
+    el.innerHTML = d.sessions.map(s => `
+        <div class="border-b border-slate-700 py-3">
+            <div class="flex justify-between items-center">
+                <span class="text-xs font-medium text-monet-400">${s.channel}:${s.chat_id}</span>
+                <span class="text-xs text-slate-500">${s.turn_count} turns | ${s.model || 'unknown'}</span>
+            </div>
+            <div class="text-xs text-slate-400 mt-1">${s.last_user_message || 'No message'}</div>
+            <div class="text-xs text-slate-600 mt-1">Tokens: ${fmt(s.total_input_tokens)}in / ${fmt(s.total_output_tokens)}out</div>
+        </div>
+    `).join('');
+}
+
+async function loadAudit() {
+    const filter = document.getElementById('audit-filter').value;
+    const qs = filter ? `?channel=${filter}&limit=50` : '?limit=50';
+    const d = await api(`/audit${qs}`);
+    if (!d) return;
+    const tbody = document.getElementById('audit-table');
+    tbody.innerHTML = '';
+    for (const e of (d.events || [])) {
+        const tokens = (e.input_tokens || e.output_tokens) ? `${fmt(e.input_tokens)}/${fmt(e.output_tokens)}` : '-';
+        tbody.innerHTML += `<tr class="table-row border-b border-slate-800">
+            <td class="py-1.5 pr-3 whitespace-nowrap">${fmtTime(e.timestamp)}</td>
+            <td class="py-1.5 pr-3"><span class="px-1.5 py-0.5 rounded text-xs bg-slate-700">${e.channel}</span></td>
+            <td class="py-1.5 pr-3">${e.action}</td>
+            <td class="py-1.5 pr-3 text-monet-400">${tokens}</td>
+            <td class="py-1.5 text-slate-500 truncate max-w-xs">${e.details || ''}</td>
+        </tr>`;
+    }
+}
+
+async function loadMemory() {
+    const d = await api('/memory/stats');
+    if (!d) return;
+    const el = document.getElementById('memory-stats');
+    if (d.error) {
+        el.innerHTML = `<p class="text-red-400 text-sm">${d.error}</p>`;
+        return;
+    }
+    const collections = d.collections || {};
+    let html = '<div class="space-y-2">';
+    let total = 0;
+    for (const [name, info] of Object.entries(collections).sort((a, b) => (b[1].points || 0) - (a[1].points || 0))) {
+        const pts = info.points || 0;
+        total += pts;
+        const bar = Math.min(100, (pts / 10000) * 100);
+        html += `<div>
+            <div class="flex justify-between text-xs mb-1">
+                <span>${name}</span>
+                <span class="text-slate-500">${fmt(pts)} points</span>
+            </div>
+            <div class="h-1.5 bg-slate-700 rounded-full overflow-hidden">
+                <div class="h-full bg-monet-500 rounded-full" style="width: ${bar}%"></div>
+            </div>
+        </div>`;
+    }
+    html += `</div><div class="mt-4 text-xs text-slate-500">Total: ${fmt(total)} points across ${Object.keys(collections).length} collections</div>`;
+    el.innerHTML = html;
+}
+
+function switchTab(name) {
+    document.querySelectorAll('[id^="tab-"]').forEach(el => el.classList.add('hidden'));
+    document.getElementById(`tab-${name}`).classList.remove('hidden');
+    document.querySelectorAll('.flex.gap-6 button').forEach(btn => {
+        btn.className = btn.textContent.toLowerCase().includes(name) ? 'tab-active pb-2 text-sm font-medium' : 'tab-inactive pb-2 text-sm font-medium';
+    });
+    if (name === 'audit') loadAudit();
+    if (name === 'memory') loadMemory();
+    if (name === 'sessions') loadSessions();
+}
+
+async function refreshAll() {
+    await Promise.all([loadHealth(), loadUsage(), loadSessions()]);
+}
+
+// Auth setup
+if (!API_KEY && !window.location.hostname.includes('localhost')) {
+    const key = prompt('Enter Monet API key:');
+    if (key) { localStorage.setItem('monet_api_key', key); location.reload(); }
+}
+
+// Initial load
+refreshAll();
+setInterval(refreshAll, 30000);
+</script>
+</body>
+</html>

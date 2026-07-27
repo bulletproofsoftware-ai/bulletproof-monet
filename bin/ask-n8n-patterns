@@ -1,0 +1,4 @@
+#!/bin/bash
+# ask-n8n-patterns — n8n workflow architectural patterns
+# Wrapper around ask-ref for workflow design questions
+exec ask-ref n8n-workflow-patterns "$@"

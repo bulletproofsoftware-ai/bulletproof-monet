@@ -1,0 +1,5 @@
+#!/bin/bash
+# ask-design — UI/UX design consultation
+# Wrapper around ask-ref for design questions
+# Uses sonnet by default for better design reasoning
+ASK_MODEL="${ASK_MODEL:-sonnet}" exec ask-ref ui-design "$@"

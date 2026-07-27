@@ -1,0 +1,4 @@
+#!/bin/bash
+# ask-n8n-expr — n8n expression syntax reference
+# Wrapper around ask-ref for expression syntax questions
+exec ask-ref n8n-expression-syntax "$@"

@@ -1,0 +1,92 @@
+{
+  "updatedAt": "2026-03-21T15:30:17.761Z",
+  "createdAt": "2026-03-21T13:15:38.068Z",
+  "id": "hippocampal-consolidation",
+  "name": "Memory: Hippocampal Consolidation",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "trigger",
+      "name": "Schedule",
+      "type": "n8n-nodes-base.scheduleTrigger",
+      "typeVersion": 1.2,
+      "position": [
+        0,
+        0
+      ],
+      "parameters": {
+        "rule": {
+          "interval": [
+            {
+              "field": "cronExpression",
+              "expression": "0 3 * * *"
+            }
+          ]
+        }
+      }
+    },
+    {
+      "id": "code",
+      "name": "Consolidation Cycle",
+      "type": "n8n-nodes-base.code",
+      "typeVersion": 2,
+      "position": [
+        220,
+        0
+      ],
+      "parameters": {
+        "jsCode": "\nconst QDRANT_URL = 'http://qdrant:6333';\nconst QDRANT_API_KEY = process.env.QDRANT_API_KEY || '';\nconst OLLAMA_URL = 'http://host.docker.internal:11434';\n\nasync function qdrantScroll(collection, filter, limit=100) {\n  const body = {limit, with_payload: true, with_vector: false};\n  if (filter) body.filter = filter;\n  const r = await fetch(`${QDRANT_URL}/collections/${collection}/points/scroll`, {\n    method: 'POST', headers: {'api-key': QDRANT_API_KEY, 'Content-Type': 'application/json'},\n    body: JSON.stringify(body)\n  });\n  const d = await r.json();\n  return d.result?.points || [];\n}\n\nasync function qdrantStore(collection, id, vector, payload) {\n  await fetch(`${QDRANT_URL}/collections/${collection}/points`, {\n    method: 'PUT', headers: {'api-key': QDRANT_API_KEY, 'Content-Type': 'application/json'},\n    body: JSON.stringify({points: [{id, vector, payload}]})\n  });\n}\n\nasync function qdrantUpdate(collection, ids, payload) {\n  await fetch(`${QDRANT_URL}/collections/${collection}/points/payload`, {\n    method: 'POST', headers: {'api-key': QDRANT_API_KEY, 'Content-Type': 'application/json'},\n    body: JSON.stringify({payload, points: ids})\n  });\n}\n\nasync function embed(text) {\n  const r = await fetch(`${OLLAMA_URL}/api/embed`, {\n    method: 'POST', headers: {'Content-Type': 'application/json'},\n    body: JSON.stringify({model: 'nomic-embed-text', input: text})\n  });\n  const d = await r.json();\n  return d.embeddings?.[0] || null;\n}\n\nfunction uuid() { return crypto.randomUUID(); }\n\n// Phase 1: Replay \u2014 scan recent episodes\nconst episodes = await qdrantScroll('episodes', null, 50);\nconst now = Date.now();\nconst recentEpisodes = episodes.filter(e => {\n  const created = new Date(e.payload?.created_at || 0).getTime();\n  return (now - created) < 48 * 60 * 60 * 1000; // last 48h\n});\n\n// Phase 2: Tier transfer\nconst hotMemories = await qdrantScroll('memories_hot', null, 100);\nconst transferredToWarm = [];\nconst pruned = [];\n\nfor (const m of hotMemories) {\n  const created = new Date(m.payload?.created_at || 0).getTime();\n  const ageHours = (now - created) / (60 * 60 * 1000);\n  const recallCount = m.payload?.recall_count || 0;\n\n  if (ageHours >= 24 && recallCount >= 2) {\n    // hot -> warm\n    const vec = await embed(m.payload?.content || '');\n    if (vec) {\n      await qdrantStore('memories_warm', m.id, vec, {...m.payload, tier: 'warm', promoted_at: new Date().toISOString()});\n      transferredToWarm.push(m.id);\n    }\n  } else if (ageHours >= 48 && recallCount === 0) {\n    // hot -> pruned (never recalled)\n    const vec = await embed(m.payload?.content || '');\n    if (vec) {\n      await qdrantStore('memories_cold', m.id, vec, {...m.payload, tier: 'cold', pruned_at: new Date().toISOString(), prune_reason: 'never_recalled_48h'});\n      pruned.push(m.id);\n    }\n  }\n}\n\n// Phase 3: Log consolidation cycle\nconst cycleId = uuid();\nconst cycleVec = await embed('consolidation cycle ' + new Date().toISOString());\nif (cycleVec) {\n  await qdrantStore('consolidation_cycles', cycleId, cycleVec, {\n    cycle_id: cycleId, timestamp: new Date().toISOString(),\n    episodes_reviewed: recentEpisodes.length,\n    transferred_to_warm: transferredToWarm.length,\n    pruned: pruned.length,\n    status: 'completed'\n  });\n}\n\nreturn [{json: {episodes: recentEpisodes.length, transferred: transferredToWarm.length, pruned: pruned.length}}];\n"
+      }
+    }
+  ],
+  "connections": {
+    "Schedule": {
+      "main": [
+        [
+          {
+            "node": "Consolidation Cycle",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "timezone": "America/New_York"
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": null,
+  "versionId": "b5e2ccdf-47d5-4479-9a7b-f83123fccad4",
+  "activeVersionId": "b5e2ccdf-47d5-4479-9a7b-f83123fccad4",
+  "versionCounter": 14,
+  "triggerCount": 1,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-03-21T15:29:34.051Z",
+      "createdAt": "2026-03-21T15:29:34.051Z",
+      "role": "workflow:owner",
+      "workflowId": "hippocampal-consolidation",
+      "projectId": "iRM29sKlF8cYkleS",
+      "project": {
+        "updatedAt": "2026-02-13T14:17:27.938Z",
+        "createdAt": "2026-02-01T18:19:47.522Z",
+        "id": "iRM29sKlF8cYkleS",
+        "name": "Claude Admin <admin@claude.local>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "05ae2561-64fa-40fc-8e62-92f94f3c4680"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

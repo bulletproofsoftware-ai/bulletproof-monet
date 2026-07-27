@@ -1,0 +1,310 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  python:
+    name: python ${{ matrix.python }}
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        python: ["3.11", "3.12"]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: ${{ matrix.python }}
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements-webhook.txt -r requirements-dev.txt
+      - name: Compile every tracked Python file
+        run: |
+          git ls-files '*.py' | grep -v node_modules | xargs -r python -m py_compile
+      - name: Run test suite
+        env:
+          TEST_CHAT_ID: "111111111"
+        run: ./tests/run-all.sh --python
+
+  shell:
+    name: shell
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - name: Install shellcheck
+        run: sudo apt-get update -qq && sudo apt-get install -y -qq shellcheck
+      - name: Syntax-check every tracked shell script
+        run: |
+          # bash -n covers all 66 tracked scripts, including the ones the
+          # shellcheck step below excludes. Nothing is unchecked for syntax.
+          fail=0
+          while IFS= read -r f; do
+            bash -n "$f" || { echo "::error file=$f::bash -n failed"; fail=1; }
+          done < <(git ls-files '*.sh')
+          exit $fail
+      - name: shellcheck
+        run: |
+          # -S warning: fail on warning and error, allow info/style. The severity is
+          # NOT lowered; instead the files with pre-existing findings are excluded by
+          # name, per TODO/006 ("scope the step to a list that is already clean ...
+          # do not silently weaken -S").
+          #
+          # The former `monet-tg.sh` / `src/monet-tg.sh` exclusions are gone: the OSS
+          # scrub deleted both duplicates, and the surviving canonical copy,
+          # bridges/monet-tg.sh, is linted here and passes clean at -S warning.
+          #
+          # Excluded, with the reason each is deferred rather than fixed in this commit
+          # (all are outside spec 006's scope, which is CI/hygiene files only):
+          #   claude/scripts/{auto-skill-detect,memory-first-gate,prompt-memory-recall}.sh
+          #     SC2088 (quoted tilde) and SC2034 (unused vars) -- real but cosmetic.
+          #   scripts/sync-and-index-obsidian.sh   SC2115, guarded by a -d test.
+          #   tests/test-*.sh                      SC2155/SC2010 in the test harness.
+          # Follow-up: fix these and delete the exclusions. Add a new exclusion ONLY
+          # with a one-line justification, or prefer an inline `# shellcheck disable=`.
+          git ls-files '*.sh' \
+            ':!claude/scripts/auto-skill-detect.sh' \
+            ':!claude/scripts/memory-first-gate.sh' \
+            ':!claude/scripts/prompt-memory-recall.sh' \
+            ':!scripts/sync-and-index-obsidian.sh' \
+            ':!tests/test-bg-runner-queue.sh' \
+            ':!tests/test-dispatch.sh' \
+            ':!tests/test-queue.sh' \
+            ':!tests/test-worker-drain.sh' \
+            | xargs -r shellcheck -S warning -x
+      - name: Run shell test suite
+        env:
+          TEST_CHAT_ID: "111111111"
+        run: ./tests/run-all.sh --shell
+
+  install-check:
+    name: install.sh --check (clean clone, no credentials)
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97  # v7
+        with:
+          python-version: "3.12"
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: "20"
+      - name: install.sh --check must pass with zero credentials
+        run: |
+          test ! -f .env   # prove there are no credentials in play
+          ./install.sh --check
+      - name: No .env may have been created
+        run: test ! -f .env
+      - name: docker compose config is valid
+        run: |
+          docker compose version
+          docker compose config -q
+
+  hygiene:
+    name: privacy + config hygiene
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+        with:
+          fetch-depth: 0   # gitleaks scans history; a shallow clone would hide it
+      - name: No owner identity may reappear
+        run: |
+          # Regression guard for TODO/001. docs/scan/ holds signed historical artifacts.
+          # MUST be `git grep -w`, never `git grep -E '\bMarc\b'`: git grep -E is POSIX ERE
+          # where \b is a literal backspace, not a word boundary, so the -E form matches
+          # nothing and this guard would pass vacuously forever. Verified locally: against
+          # an identical planted violation, -w exits 0 (fires) and -E exits 1 (blind).
+          # -w also still excludes the `March` substring in
+          # n8n/workflows/agent-output-visual-formatter.json (verified: -cw returns 0 there).
+          #
+          # The patterns are base64-encoded and decoded at runtime. A guard that
+          # spells out the identifiers it bans publishes them, which is precisely
+          # what the scrub exists to prevent. Encoding them means the literals
+          # never appear in this file -- so .github no longer needs excluding from
+          # the guard's own scope, and the guard now covers itself too.
+          # TODO/ and conductor-state.json are no longer tracked (they were the
+          # workstream's own records and quoted the identifiers verbatim).
+          OWNER_NAME=$(printf 'TWFyYw==' | base64 -d)
+          OWNER_ART=$(printf 'Y2hlc3RlcmZpZWxkfGNvdmVya2l0fHdhenVoLWRhaWx5LWluc3RydWN0aW9uc3w0MTEyMnxzeW5jZWQgZnJvbSBjMg==' | base64 -d)
+          SCOPE=(. ':!mcp/claude-memory-mcp/node_modules' ':!TODO' ':!COMPLETE'
+                 ':!docs/scan')
+          if git grep -nw "$OWNER_NAME" -- "${SCOPE[@]}"; then
+            echo "::error::owner name reintroduced"; exit 1
+          fi
+          if git grep -niE "$OWNER_ART" -- "${SCOPE[@]}"; then
+            echo "::error::owner artifact reintroduced"; exit 1
+          fi
+      - name: No scrubbed integration or persona may reappear
+        run: |
+          # Regression guard for the OSS scrub (work unit 004-006), which deleted every
+          # command backed by a private or third-party API, all nine advisor personas,
+          # and the paid TTS provider. Nothing may reintroduce them.
+          #
+          # The banned terms are base64-encoded and decoded at runtime, so this file
+          # does not itself publish the persona names it exists to keep out. That in
+          # turn lets the guard scan .github as well, closing the hole where a
+          # scrubbed term could hide in workflow YAML.
+          # docs/scan holds signed historical scan artifacts rather than shipped code.
+          # docs/claude-memory-mcp.cyclonedx.json is a GENERATED SBOM whose npm package
+          # authors are outside our control -- one is a real person whose initials
+          # collide with a scrubbed persona name.
+          #
+          # -w, never -E with \b: git grep -E is POSIX ERE where \b is a literal
+          # backspace, so the -E form would match nothing and pass vacuously. Same trap
+          # the owner-identity guard documents above.
+          SCRUBBED=$(printf 'd2F6dWh8ZWxldmVubGFic3xoYWNrZXJuZXdzfE1yU3BvY2t8UGxhdG98Sm9vbnxOZWxsaWV8QmlqYW4=' | base64 -d)
+          SCOPE=(. ':!mcp/claude-memory-mcp/node_modules' ':!TODO' ':!COMPLETE'
+                 ':!docs/scan' ':!docs/claude-memory-mcp.cyclonedx.json')
+          if git grep -nwiE "$SCRUBBED" -- "${SCOPE[@]}"; then
+            echo "::error::a scrubbed integration or persona was reintroduced"; exit 1
+          fi
+      - name: Scrub guard actually fires
+        run: |
+          # A guard that passes by finding nothing cannot distinguish a clean tree from
+          # a broken scope. Plant a violation and require the same grep to catch it.
+          SCRUBBED=$(printf 'd2F6dWh8ZWxldmVubGFic3xoYWNrZXJuZXdzfE1yU3BvY2t8UGxhdG98Sm9vbnxOZWxsaWV8QmlqYW4=' | base64 -d)
+          SCOPE=(. ':!mcp/claude-memory-mcp/node_modules' ':!TODO' ':!COMPLETE'
+                 ':!docs/scan' ':!docs/claude-memory-mcp.cyclonedx.json')
+          canary=lib/__scrub_canary.txt
+          cleanup() { rm -f "$canary"; git rm -q --cached --force "$canary" 2>/dev/null || :; }
+          trap cleanup EXIT
+          printf 'YXNrIE5lbGxpZSB0byBjaGVjayB0aGUgd2F6dWggZmVlZCBhbmQgcmVhZCBpdCB2aWEgZWxldmVubGFicwo=' | base64 -d > "$canary"
+          git add -f "$canary"
+          git grep -nwiE "$SCRUBBED" -- "${SCOPE[@]}" >/dev/null \
+            || { echo "::error::scrub guard did NOT fire on a planted violation"; exit 1; }
+          echo "scrub guard fired on the planted violation"
+      - name: Command surface is exactly the 17-command allowlist
+        run: |
+          # Deny by default. Verifies scripts/tg-register-commands.sh, the /help
+          # heredoc and the handler branches all agree with the allowlist. Drift
+          # between them is how a scrubbed command creeps back in unnoticed.
+          ./scripts/check-command-allowlist.py
+      - name: Owner-identity guard actually fires
+        run: |
+          # The guard above passes by finding nothing, so a scoping mistake that
+          # silences it is indistinguishable from a clean tree. Plant a violation
+          # in a tracked product path and require the same greps to catch it.
+          OWNER_NAME=$(printf 'TWFyYw==' | base64 -d)
+          OWNER_ART=$(printf 'Y2hlc3RlcmZpZWxkfGNvdmVya2l0fHdhenVoLWRhaWx5LWluc3RydWN0aW9uc3w0MTEyMnxzeW5jZWQgZnJvbSBjMg==' | base64 -d)
+          SCOPE=(. ':!mcp/claude-memory-mcp/node_modules' ':!TODO' ':!COMPLETE'
+                 ':!docs/scan')
+          canary=lib/__guard_canary.txt
+          cleanup() { rm -f "$canary"; git rm -q --cached --force "$canary" 2>/dev/null || :; }
+          trap cleanup EXIT
+          printf 'Y29udGFjdCBNYXJjIGFib3V0IGNoZXN0ZXJmaWVsZCBwb3J0IDQxMTIyCg==' | base64 -d > "$canary"
+          git add -f "$canary"
+          git grep -nw "$OWNER_NAME" -- "${SCOPE[@]}" >/dev/null \
+            || { echo "::error::name guard did NOT fire on a planted violation"; exit 1; }
+          git grep -niE "$OWNER_ART" -- "${SCOPE[@]}" >/dev/null \
+            || { echo "::error::artifact guard did NOT fire on a planted violation"; exit 1; }
+          echo "both guards fired on the planted violation"
+      - name: No hardcoded install root outside docs
+        run: |
+          # Regression guard for TODO/002. `/opt/monet` is still the documented
+          # last-resort fallback, so the two sanctioned resolvers that own that
+          # default -- lib/monet-env.sh and lib/monet_paths.py -- are excluded, as is
+          # the `os.environ.get('MONET_HOME', '/opt/monet')` fallback idiom. What this
+          # catches is a bare /opt/monet path reintroduced anywhere else in executable
+          # code. Verified locally: clean at HEAD, fires on a planted `X=/opt/monet/foo`.
+          if git grep -n '/opt/monet' -- . \
+               ':!mcp/claude-memory-mcp/node_modules' ':!TODO' ':!COMPLETE' \
+               ':!docs' ':!README.md' ':!CLAUDE.md' ':!media' ':!.github' \
+               ':!.env.example' ':!lib/monet-env.sh' ':!lib/monet_paths.py' \
+             | grep -vE "environ\.get\((\"|')MONET_HOME(\"|'), ?(\"|')/opt/monet(\"|')\)"; then
+            echo "::error::/opt/monet hardcoded in executable code"; exit 1
+          fi
+      - name: No unpinned container images
+        run: |
+          if grep -rnE '^\s+image:.*:latest' docker-compose.yml docker/*/docker-compose.yml; then
+            echo "::error::unpinned :latest image tag"; exit 1
+          fi
+      - name: Every action is SHA-pinned
+        run: |
+          if grep -nE 'uses:\s+[^ ]+@(v[0-9]|main|master|HEAD)' .github/workflows/*.yml; then
+            echo "::error::action pinned to a mutable ref; use a 40-char commit SHA"; exit 1
+          fi
+      - name: Every action pin carries a version comment
+        run: |
+          if grep -E 'uses:.*@[0-9a-f]{40}' .github/workflows/*.yml | grep -vE '#\s*v?[0-9]'; then
+            echo "::error::SHA pin without a trailing version comment"; exit 1
+          fi
+      - name: No secrets committed
+        run: |
+          # A committed .env is the single highest-consequence mistake here.
+          if git ls-files | grep -qxE '\.env|docker/claude-memory/\.env'; then
+            echo "::error::a .env file is tracked"; exit 1
+          fi
+      - name: .env.example must survive being sourced
+        run: |
+          # `cp .env.example .env` is the README's first command, and install.sh
+          # sources the result. An unquoted value containing a space is therefore
+          # not a style nit: `FOO=the operator` makes the shell try to run
+          # `operator`, and the installer dies with exit 127 on the deployer's
+          # very first step. This shipped once already (MONET_OWNER_NAME).
+          if grep -nE '^[A-Z_0-9]+=[^"'"'"']*[[:space:]]' .env.example; then
+            echo "::error::unquoted .env.example value containing whitespace"; exit 1
+          fi
+          # Prove it, rather than trusting the pattern: sourcing must be clean.
+          # `set -a; . file` does not return non-zero for a stray command, so
+          # assert on stderr instead — that is where "command not found" lands.
+          err=$(bash -c 'set -a; . ./.env.example; set +a' 2>&1 >/dev/null)
+          if [ -n "$err" ]; then
+            echo "$err"
+            echo "::error::sourcing .env.example produced errors"; exit 1
+          fi
+      - name: gitleaks secret scan
+        run: |
+          # gitleaks owns the workstream exit gate's "no secrets" criterion. The tracked-.env
+          # check above catches only the one filename; gitleaks catches a key pasted into any
+          # file. Installed from the upstream release tarball rather than a marketplace action,
+          # for the same supply-chain reason shellcheck is: no third party gets this
+          # workflow's token. Pinned, and matched to the version run locally pre-push.
+          GITLEAKS_VERSION=8.30.0
+          curl -sSfL -o /tmp/gitleaks.tar.gz \
+            "https://github.com/gitleaks/gitleaks/releases/download/v${GITLEAKS_VERSION}/gitleaks_${GITLEAKS_VERSION}_linux_x64.tar.gz"
+          tar -xzf /tmp/gitleaks.tar.gz -C /tmp gitleaks
+          /tmp/gitleaks version
+          # Two passes, because they cover different things and each is blind to the other:
+          #   1. history  -- `detect` walks commits; a secret committed then deleted is
+          #                  still in the history and still burned.
+          #   2. worktree -- `--no-git` walks files on disk; this is what catches a secret
+          #                  added in the PR head as an untracked/unstaged file.
+          # Verified locally that pass 2 exits 1 on a planted non-allowlisted AWS key
+          # and 0 once removed.
+          /tmp/gitleaks detect --source . --no-banner --redact --exit-code 1 \
+            --report-format sarif --report-path /tmp/gitleaks-history.sarif
+          /tmp/gitleaks detect --source . --no-git --no-banner --redact --exit-code 1 \
+            --report-format sarif --report-path /tmp/gitleaks-worktree.sarif
+          echo "gitleaks: clean (history + working tree)"
+      - name: Every JSON parses
+        run: |
+          fail=0
+          while IFS= read -r f; do
+            python3 -m json.tool "$f" >/dev/null || { echo "::error file=$f::invalid JSON"; fail=1; }
+          done < <(git ls-files '*.json' | grep -v node_modules)
+          exit $fail
+
+  node:
+    name: memory MCP build
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1  # v7
+      - uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020  # v7.0.0
+        with:
+          node-version: "20"   # package.json engines: node >=18.0.0
+      - name: Build the bundled MCP server
+        working-directory: mcp/claude-memory-mcp
+        run: |
+          npm ci
+          npm run build
+          test -f dist/index.js

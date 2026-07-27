@@ -1,0 +1,116 @@
+#!/usr/bin/env python3
+"""critic — adversarial self-review of a generated report before delivery (PRD #3).
+
+Reads the content to review on stdin; the first arg is a short topic label.
+Calls a skeptical critic (Claude Haiku) to flag ONLY material problems —
+unsupported claims, weak/overstated conclusions, missing context, internal
+contradictions, factual red flags. Prints a one-line caveats footer to stdout
+when severity is medium/high (empty otherwise, so callers can append blindly).
+
+Also appends a quality record to data/critic-scores.jsonl, which feeds the #2
+skill/output scoring (avg_quality, etc.).
+
+  some_report | critic "research: <query>"
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.realpath(__file__)), "..", "lib"))
+import monet_paths
+
+HOME = monet_paths.MONET_HOME
+MODEL = os.environ.get("CRITIC_MODEL", "claude-haiku-4-5")
+SUBPROC_PATH = os.pathsep.join([
+    "/usr/local/bin",
+    monet_paths.path(".local/bin"),
+    monet_paths.path("bin"),
+    "/usr/bin",
+    "/bin",
+])
+LOG = os.environ.get("CRITIC_LOG", f"{HOME}/data/critic-scores.jsonl")
+MIN_CHARS = int(os.environ.get("CRITIC_MIN_CHARS", "200"))
+OWNER = os.environ.get("MONET_OWNER_NAME", "the operator")
+
+PROMPT = (
+    "You are a skeptical critic reviewing an assistant's output before it is "
+    f"delivered to {OWNER}. Flag ONLY substantive problems: logical fallacies, "
+    "overstated or unfalsifiable conclusions, internal contradictions, or clear "
+    "factual red flags. "
+    "IMPORTANT: the output is often a routine briefing assembled from live tools "
+    "(weather, calendar, email, news, logs). Do NOT flag it merely for lacking "
+    "inline citations, for being 'unverified', or for not naming sources — that "
+    "is expected. Do NOT nitpick style or formatting. Only raise severity "
+    "medium/high for a genuine reasoning or factual defect a reader would care "
+    "about; otherwise use none/low. "
+    "Output STRICT JSON only, no prose, no code fences: "
+    '{"severity":"none|low|medium|high","issues":["short issue", ...]}. '
+    "Topic: "
+)
+
+
+def _extract_json(text):
+    if not text:
+        return None
+    s = text.find("{")
+    if s == -1:
+        return None
+    depth = 0
+    for i in range(s, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[s:i + 1])
+                except json.JSONDecodeError:
+                    return None
+    return None
+
+
+def main():
+    topic = sys.argv[1] if len(sys.argv) > 1 else "(unspecified)"
+    content = sys.stdin.read()
+    if len(content.strip()) < MIN_CHARS:
+        return  # too short to critique meaningfully
+    try:
+        p = subprocess.run(
+            ["claude", "-p", "--model", MODEL, "--max-turns", "1",
+             "--dangerously-skip-permissions", "--disable-slash-commands",
+             "--output-format", "json",
+             PROMPT + topic + "\n\nOUTPUT TO REVIEW:\n" + content[:12000]],
+            capture_output=True, text=True, timeout=60, cwd=HOME,
+            env={**os.environ, "HOME": HOME,
+                 "PATH": SUBPROC_PATH + ":" + os.environ.get("PATH", "")},
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return
+    if p.returncode != 0:
+        return
+    try:
+        result = json.loads(p.stdout).get("result", "")
+    except json.JSONDecodeError:
+        return
+    obj = _extract_json(result)
+    if not obj or not isinstance(obj, dict):
+        return
+    sev = str(obj.get("severity", "none")).lower()
+    issues = [str(x).strip() for x in (obj.get("issues") or []) if str(x).strip()]
+
+    try:
+        os.makedirs(os.path.dirname(LOG), exist_ok=True)
+        with open(LOG, "a") as fh:
+            fh.write(json.dumps({"ts": int(time.time()), "topic": topic[:80],
+                                 "severity": sev, "n_issues": len(issues)}) + "\n")
+    except OSError:
+        pass
+
+    if sev in ("medium", "high") and issues:
+        print("⚠️ Caveats (auto-review): " + "; ".join(issues[:4]))
+
+
+if __name__ == "__main__":
+    main()

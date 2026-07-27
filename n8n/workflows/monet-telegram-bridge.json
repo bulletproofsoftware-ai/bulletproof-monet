@@ -1,0 +1,288 @@
+{
+  "updatedAt": "2026-03-22T13:18:56.322Z",
+  "createdAt": "2026-02-13T18:01:29.822Z",
+  "id": "SOfI3mezDnwECN1X",
+  "name": "Monet Telegram Bridge",
+  "description": null,
+  "active": true,
+  "isArchived": false,
+  "nodes": [
+    {
+      "id": "tg-webhook",
+      "name": "Telegram Webhook",
+      "type": "n8n-nodes-base.webhook",
+      "position": [
+        224,
+        208
+      ],
+      "webhookId": "monet-tg-inbound-001",
+      "parameters": {
+        "path": "monet-tg-inbound",
+        "options": {},
+        "httpMethod": "POST",
+        "responseMode": "onReceived",
+        "authentication": "none"
+      },
+      "typeVersion": 2
+    },
+    {
+      "id": "tg-auth-check",
+      "name": "Authorized User?",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        448,
+        208
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "user-check",
+              "operator": {
+                "type": "string",
+                "operation": "equals"
+              },
+              "leftValue": "={{ String($json.body.message?.from?.id || $json.body.edited_message?.from?.id || '') }}",
+              "rightValue": "YOUR_CHAT_ID"
+            }
+          ]
+        }
+      },
+      "typeVersion": 2
+    },
+    {
+      "id": "tg-ssh-claude",
+      "name": "Claude Code",
+      "type": "n8n-nodes-base.ssh",
+      "position": [
+        872,
+        208
+      ],
+      "parameters": {
+        "cwd": "@MONET_HOME@",
+        "command": "={{ (() => {\n  const msg = $(\"Telegram Webhook\").first().json.body.message\n           || $(\"Telegram Webhook\").first().json.body.edited_message\n           || {};\n  const text = (msg.text || msg.caption || '').trim();\n  const chatId = String(msg.chat?.id || '');\n  const messageId = String(msg.message_id || '');\n\n  // Detect file type and extract file_id\n  let fileArg = '';\n  if (msg.voice) {\n    fileArg = 'voice:' + msg.voice.file_id;\n  } else if (msg.audio) {\n    fileArg = 'voice:' + msg.audio.file_id;\n  } else if (msg.document) {\n    const mime = (msg.document.mime_type || '').toLowerCase();\n    if (mime.startsWith('image/')) {\n      fileArg = 'img:' + msg.document.file_id;\n    } else {\n      fileArg = 'doc:' + msg.document.file_id;\n    }\n  } else if (msg.photo && msg.photo.length > 0) {\n    fileArg = 'img:' + msg.photo[msg.photo.length - 1].file_id;\n  }\n\n  // Detect location (static or live location update)\n  if (msg.location) {\n    fileArg = 'loc:' + msg.location.latitude + ',' + msg.location.longitude;\n  }\n\n  if (!text && !fileArg) return 'echo \"No text or media received.\"';\n\n  const safeText = text ? JSON.stringify(text) : \"''\";\n  const safeFile = fileArg ? JSON.stringify(fileArg) : \"''\";\n  const safeChatId = chatId ? JSON.stringify(chatId) : \"''\";\n  const safeMsgId = messageId ? JSON.stringify(messageId) : \"''\";\n\n  return '@MONET_HOME@/bridges/monet-tg.sh ' + safeText + ' ' + safeFile + ' ' + safeChatId + ' ' + safeMsgId;\n})() }}",
+        "authentication": "privateKey",
+        "options": {
+          "timeout": 300000
+        }
+      },
+      "credentials": {
+        "sshPrivateKey": {
+          "id": "y90regmOxrAJ2gdd",
+          "name": "Monet Key"
+        }
+      },
+      "typeVersion": 1
+    },
+    {
+      "id": "tg-router",
+      "name": "Route Response",
+      "type": "n8n-nodes-base.code",
+      "position": [
+        1096,
+        208
+      ],
+      "parameters": {
+        "mode": "runOnceForEachItem",
+        "jsCode": "const stdout = $input.item.json.stdout || '';\nconst msg = $('Telegram Webhook').first().json.body.message || $('Telegram Webhook').first().json.body.edited_message || {};\nconst chatId = String(msg.chat?.id || '');\nconst botToken = $env.BOT_TOKEN;\n\n// Check for image markers [IMG]url[/IMG]\nconst imgMatch = stdout.match(/\\[IMG\\](https?:\\/\\/[^\\[]+)\\[\\/IMG\\]/);\nlet rawText = '';\nlet mediaUrl = '';\n\nif (imgMatch) {\n  mediaUrl = imgMatch[1].trim();\n  rawText = stdout.replace(/\\[IMG\\]https?:\\/\\/[^\\[]+\\[\\/IMG\\]/, '').trim();\n} else {\n  rawText = stdout.trim();\n}\n\n// --- Markdown to Telegram HTML conversion ---\nfunction mdToTgHtml(text) {\n  let s = text;\n  // Escape HTML entities first\n  s = s.replace(/&/g, '&amp;');\n  s = s.replace(/</g, '&lt;');\n  s = s.replace(/>/g, '&gt;');\n\n  // Code blocks (``` ... ```)\n  s = s.replace(/```(?:\\w+)?\\n([\\s\\S]*?)```/g, '<pre>$1</pre>');\n\n  // Inline code\n  s = s.replace(/`([^`]+)`/g, '<code>$1</code>');\n\n  // Bold (**text** or __text__)\n  s = s.replace(/\\*\\*(.+?)\\*\\*/g, '<b>$1</b>');\n  s = s.replace(/__(.+?)__/g, '<b>$1</b>');\n\n  // Italic (*text* or _text_) - careful not to match inside words\n  s = s.replace(/(?<![\\w*])\\*([^*]+?)\\*(?![\\w*])/g, '<i>$1</i>');\n  s = s.replace(/(?<![\\w_])_([^_]+?)_(?![\\w_])/g, '<i>$1</i>');\n\n  // Strikethrough\n  s = s.replace(/~~(.+?)~~/g, '<s>$1</s>');\n\n  // Links [text](url)\n  s = s.replace(/\\[([^\\]]+)\\]\\((https?:\\/\\/[^)]+)\\)/g, '<a href=\"$2\">$1</a>');\n\n  // Headings (# text) -> bold\n  s = s.replace(/^#{1,6}\\s+(.+)$/gm, '<b>$1</b>');\n\n  // Bullet lists (- or * at start of line)\n  s = s.replace(/^[\\s]*[-*]\\s+/gm, '\\u2022 ');\n\n  return s;\n}\n\nconst htmlText = mdToTgHtml(rawText);\n\n// --- Split at 4096 chars on paragraph/line/sentence boundaries ---\nfunction splitMessage(text, limit) {\n  if (text.length <= limit) return [text];\n  const chunks = [];\n  let remaining = text;\n  while (remaining.length > limit) {\n    let splitAt = remaining.lastIndexOf('\\n\\n', limit);\n    if (splitAt < limit * 0.3) splitAt = remaining.lastIndexOf('\\n', limit);\n    if (splitAt < limit * 0.3) splitAt = remaining.lastIndexOf('. ', limit);\n    if (splitAt < limit * 0.3) splitAt = limit;\n    chunks.push(remaining.substring(0, splitAt + 1).trim());\n    remaining = remaining.substring(splitAt + 1).trim();\n  }\n  if (remaining) chunks.push(remaining);\n  return chunks;\n}\n\nconst chunks = splitMessage(htmlText, 4096);\n\n// Send overflow chunks (index 1+) directly via TG API\nfor (let i = 1; i < chunks.length; i++) {\n  try {\n    await new Promise(r => setTimeout(r, 300));\n    await $helpers.httpRequest({\n      method: 'POST',\n      url: 'https://api.telegram.org/bot' + botToken + '/sendMessage',\n      body: {\n        chat_id: chatId,\n        text: chunks[i],\n        parse_mode: 'HTML'\n      },\n      headers: { 'Content-Type': 'application/json' },\n      json: true\n    });\n  } catch (e) {\n    // If HTML parse fails, retry without parse_mode\n    try {\n      await $helpers.httpRequest({\n        method: 'POST',\n        url: 'https://api.telegram.org/bot' + botToken + '/sendMessage',\n        body: {\n          chat_id: chatId,\n          text: chunks[i]\n        },\n        headers: { 'Content-Type': 'application/json' },\n        json: true\n      });\n    } catch (e2) { /* swallow */ }\n  }\n}\n\n// Return first chunk for normal n8n flow — skip if empty (standalone handlers send directly)\nconst finalMsg = chunks[0] || '';\nif (!finalMsg.trim()) return [];\nreturn { json: { message: finalMsg, chatId, mediaUrl } };\n"
+      },
+      "typeVersion": 2
+    },
+    {
+      "id": "tg-check-media",
+      "name": "Has Media?",
+      "type": "n8n-nodes-base.if",
+      "position": [
+        1320,
+        208
+      ],
+      "parameters": {
+        "conditions": {
+          "options": {
+            "leftValue": "",
+            "caseSensitive": true,
+            "typeValidation": "strict"
+          },
+          "combinator": "and",
+          "conditions": [
+            {
+              "id": "tg-media-check",
+              "operator": {
+                "type": "string",
+                "operation": "notEmpty"
+              },
+              "leftValue": "={{ $json.mediaUrl }}",
+              "rightValue": ""
+            }
+          ]
+        }
+      },
+      "typeVersion": 2
+    },
+    {
+      "id": "tg-send-photo",
+      "name": "Send Photo",
+      "type": "n8n-nodes-base.telegram",
+      "position": [
+        1544,
+        108
+      ],
+      "parameters": {
+        "file": "={{ $json.mediaUrl }}",
+        "chatId": "={{ $json.chatId }}",
+        "resource": "message",
+        "operation": "sendPhoto",
+        "additionalFields": {
+          "caption": "={{ $json.message }}",
+          "parse_mode": "HTML",
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "RpPofsaJnEF3Q8Gn",
+          "name": "Telegram account 3"
+        }
+      },
+      "typeVersion": 1.2
+    },
+    {
+      "id": "tg-send-text",
+      "name": "Send Reply",
+      "type": "n8n-nodes-base.telegram",
+      "position": [
+        1544,
+        308
+      ],
+      "parameters": {
+        "text": "={{ $json.message }}",
+        "chatId": "={{ $json.chatId }}",
+        "resource": "message",
+        "operation": "sendMessage",
+        "additionalFields": {
+          "parse_mode": "HTML",
+          "appendAttribution": false
+        }
+      },
+      "credentials": {
+        "telegramApi": {
+          "id": "RpPofsaJnEF3Q8Gn",
+          "name": "Telegram account 3"
+        }
+      },
+      "typeVersion": 1.2
+    }
+  ],
+  "connections": {
+    "Telegram Webhook": {
+      "main": [
+        [
+          {
+            "node": "Authorized User?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Authorized User?": {
+      "main": [
+        [
+          {
+            "node": "Claude Code",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        []
+      ]
+    },
+    "Claude Code": {
+      "main": [
+        [
+          {
+            "node": "Route Response",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Route Response": {
+      "main": [
+        [
+          {
+            "node": "Has Media?",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    },
+    "Has Media?": {
+      "main": [
+        [
+          {
+            "node": "Send Photo",
+            "type": "main",
+            "index": 0
+          }
+        ],
+        [
+          {
+            "node": "Send Reply",
+            "type": "main",
+            "index": 0
+          }
+        ]
+      ]
+    }
+  },
+  "settings": {
+    "executionOrder": "v1",
+    "saveDataErrorExecution": "all",
+    "saveDataSuccessExecution": "all",
+    "saveManualExecutions": true,
+    "saveExecutionProgress": true,
+    "callerPolicy": "workflowsFromSameOwner",
+    "availableInMCP": false,
+    "executionTimeout": 600
+  },
+  "staticData": null,
+  "meta": null,
+  "pinData": null,
+  "versionId": "70ca9f15-e2cd-4b4d-b33f-61b6ce6f3148",
+  "activeVersionId": "70ca9f15-e2cd-4b4d-b33f-61b6ce6f3148",
+  "versionCounter": 114,
+  "triggerCount": 1,
+  "tags": [],
+  "shared": [
+    {
+      "updatedAt": "2026-02-13T18:01:29.822Z",
+      "createdAt": "2026-02-13T18:01:29.822Z",
+      "role": "workflow:owner",
+      "workflowId": "SOfI3mezDnwECN1X",
+      "projectId": "iRM29sKlF8cYkleS",
+      "project": {
+        "updatedAt": "2026-02-13T14:17:27.938Z",
+        "createdAt": "2026-02-01T18:19:47.522Z",
+        "id": "iRM29sKlF8cYkleS",
+        "name": "Claude Admin <admin@claude.local>",
+        "type": "personal",
+        "icon": null,
+        "description": null,
+        "creatorId": "05ae2561-64fa-40fc-8e62-92f94f3c4680"
+      }
+    }
+  ],
+  "versionMetadata": {
+    "name": null,
+    "description": null
+  }
+}

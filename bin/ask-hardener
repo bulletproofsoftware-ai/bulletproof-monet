@@ -1,0 +1,4 @@
+#!/bin/bash
+# ask-hardener — AI Hardener API reference
+# Wrapper around ask-ref for aihardener questions
+exec ask-ref aihardener "$@"

@@ -1,0 +1,72 @@
+#!/bin/bash
+# skill-review {list|show <slug>|approve <slug>|reject <slug>} — review & promote
+# auto-drafted skills (PRD #1). Drafts are written by monet_harvest.py into
+# $SKILLS_DIR/_proposed/<slug>/SKILL.md. Approve promotes to $SKILLS_DIR/<slug>
+# (Claude Code auto-discovers it). Reject moves to _rejected/ so the harvester
+# never re-proposes it. Read-only except for the explicit approve/reject verbs.
+set -uo pipefail
+
+# shellcheck source=lib/monet-env.sh
+. "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/../lib/monet-env.sh"
+SKILLS_DIR="${MONET_SKILLS_DIR:-${MONET_HOME}/.claude/skills}"
+PROPOSED="$SKILLS_DIR/_proposed"
+REJECTED="$SKILLS_DIR/_rejected"
+
+# field <file> <yaml-key> -> value from frontmatter (first match)
+field() { grep -m1 -E "^$2:" "$1" 2>/dev/null | sed -E "s/^$2:[[:space:]]*//"; }
+
+cmd="${1:-list}"
+slug="${2:-}"
+
+# guard slug to a safe kebab token (never let it escape the skills dir)
+valid_slug() { [[ "$1" =~ ^[a-z0-9][a-z0-9-]{1,48}$ ]]; }
+
+case "$cmd" in
+    list|review)
+        shopt -s nullglob
+        found=0
+        out="🧩 *Proposed skills awaiting review*"
+        for d in "$PROPOSED"/*/; do
+            [ -f "${d}SKILL.md" ] || continue
+            s=$(basename "$d")
+            desc=$(field "${d}SKILL.md" description)
+            out+=$'\n'"• \`$s\` — ${desc:-(no description)}"
+            found=1
+        done
+        if [ "$found" -eq 0 ]; then
+            echo "🧩 No proposed skills awaiting review."
+        else
+            printf '%s\n\nApprove: /skills approve <slug>\nReject:  /skills reject <slug>\nView:    /skills show <slug>\n' "$out"
+        fi
+        ;;
+    show)
+        valid_slug "$slug" || { echo "Usage: /skills show <slug>"; exit 0; }
+        f="$PROPOSED/$slug/SKILL.md"
+        [ -f "$f" ] || { echo "⚠️ No proposed skill: $slug"; exit 0; }
+        printf '🧩 *%s*\n```\n%s\n```\n' "$slug" "$(head -c 3000 "$f")"
+        ;;
+    approve)
+        valid_slug "$slug" || { echo "Usage: /skills approve <slug>"; exit 0; }
+        src="$PROPOSED/$slug"
+        [ -d "$src" ] || { echo "⚠️ No proposed skill: $slug"; exit 0; }
+        [ -d "$SKILLS_DIR/$slug" ] && { echo "⚠️ Skill already exists: $slug (not overwriting)"; exit 0; }
+        if [ -z "$(field "$src/SKILL.md" name)" ] || [ -z "$(field "$src/SKILL.md" description)" ]; then
+            echo "⚠️ Draft \`$slug\` missing name/description frontmatter — not promoting."; exit 0
+        fi
+        mv "$src" "$SKILLS_DIR/$slug"
+        rm -f "$SKILLS_DIR/$slug/.harvested"
+        echo "✅ Approved: \`$slug\` is now active at $SKILLS_DIR/$slug"
+        ;;
+    reject)
+        valid_slug "$slug" || { echo "Usage: /skills reject <slug>"; exit 0; }
+        src="$PROPOSED/$slug"
+        [ -d "$src" ] || { echo "⚠️ No proposed skill: $slug"; exit 0; }
+        mkdir -p "$REJECTED"
+        rm -rf "$REJECTED/$slug"
+        mv "$src" "$REJECTED/$slug"
+        echo "🗑️ Rejected: \`$slug\` (archived; won't be re-proposed)"
+        ;;
+    *)
+        echo "Usage: /skills {list | show <slug> | approve <slug> | reject <slug>}"
+        ;;
+esac

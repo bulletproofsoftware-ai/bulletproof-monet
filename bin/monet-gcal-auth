@@ -1,0 +1,107 @@
+#!/usr/bin/env python3
+"""monet-gcal-auth — one-time Google Calendar OAuth for Monet (PRD #36).
+
+Reuses the existing installed/Desktop OAuth client (gdrive's gcp-oauth.keys.json)
+to obtain a calendar.readonly refresh token that works headlessly in cron.
+
+Subcommands:
+  url               Print the consent URL for the operator to authorize (once).
+  exchange <code>   Exchange the authorization code for a refresh token; store it.
+  token             Print a fresh access token (used by monet-meeting-prep).
+
+Stored token: $MONET_HOME/.config/monet-gcal/token.json (refresh_token + client).
+"""
+import os
+import sys
+import json
+import time
+import urllib.parse
+import urllib.request
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.realpath(__file__)), "..", "lib"))
+import monet_paths
+
+CLIENT_KEYS = os.environ.get(
+    "GCAL_CLIENT_KEYS", monet_paths.path(".config/gdrive/gcp-oauth.keys.json"))
+TOKEN_PATH = os.environ.get(
+    "GCAL_TOKEN", monet_paths.path(".config/monet-gcal/token.json"))
+SCOPE = "https://www.googleapis.com/auth/calendar.readonly"
+REDIRECT = "http://localhost"
+AUTH_EP = "https://accounts.google.com/o/oauth2/v2/auth"
+TOKEN_EP = "https://oauth2.googleapis.com/token"
+
+
+def _client():
+    d = json.load(open(CLIENT_KEYS))
+    c = d.get("installed") or d.get("web") or {}
+    if not c.get("client_id") or not c.get("client_secret"):
+        sys.exit("ERROR: no client_id/client_secret in " + CLIENT_KEYS)
+    return c["client_id"], c["client_secret"]
+
+
+def _post(data):
+    req = urllib.request.Request(
+        TOKEN_EP, method="POST",
+        data=urllib.parse.urlencode(data).encode(),
+        headers={"Content-Type": "application/x-www-form-urlencoded"})
+    return json.load(urllib.request.urlopen(req, timeout=20))
+
+
+def cmd_url():
+    cid, _ = _client()
+    params = {
+        "client_id": cid, "redirect_uri": REDIRECT, "response_type": "code",
+        "scope": SCOPE, "access_type": "offline", "prompt": "consent",
+        "include_granted_scopes": "true",
+    }
+    print(AUTH_EP + "?" + urllib.parse.urlencode(params))
+
+
+def cmd_exchange(code):
+    cid, sec = _client()
+    # accept either the bare code or a pasted localhost redirect URL
+    if code.startswith("http"):
+        q = urllib.parse.parse_qs(urllib.parse.urlparse(code).query)
+        code = (q.get("code") or [""])[0]
+    if not code:
+        sys.exit("ERROR: no authorization code provided")
+    r = _post({"code": code, "client_id": cid, "client_secret": sec,
+               "redirect_uri": REDIRECT, "grant_type": "authorization_code"})
+    if "refresh_token" not in r:
+        sys.exit("ERROR: no refresh_token returned (re-run /gcal-auth url with "
+                 "prompt=consent): " + json.dumps(r)[:300])
+    os.makedirs(os.path.dirname(TOKEN_PATH), exist_ok=True)
+    with open(TOKEN_PATH, "w") as fh:
+        json.dump({"refresh_token": r["refresh_token"],
+                   "client_id": cid, "client_secret": sec, "scope": SCOPE}, fh)
+    os.chmod(TOKEN_PATH, 0o600)
+    print("OK: calendar refresh token stored at " + TOKEN_PATH)
+
+
+def cmd_token():
+    if not os.path.exists(TOKEN_PATH):
+        sys.exit("ERROR: not authorized yet — run: monet-gcal-auth url")
+    t = json.load(open(TOKEN_PATH))
+    r = _post({"refresh_token": t["refresh_token"], "client_id": t["client_id"],
+               "client_secret": t["client_secret"], "grant_type": "refresh_token"})
+    if "access_token" not in r:
+        sys.exit("ERROR: token refresh failed: " + json.dumps(r)[:300])
+    print(r["access_token"])
+
+
+def main():
+    if len(sys.argv) < 2:
+        sys.exit(__doc__)
+    cmd = sys.argv[1]
+    if cmd == "url":
+        cmd_url()
+    elif cmd == "exchange" and len(sys.argv) >= 3:
+        cmd_exchange(sys.argv[2])
+    elif cmd == "token":
+        cmd_token()
+    else:
+        sys.exit(__doc__)
+
+
+if __name__ == "__main__":
+    main()

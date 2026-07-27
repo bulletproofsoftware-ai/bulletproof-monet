@@ -1,0 +1,37 @@
+services:
+  markdown-converter:
+    build: .
+    container_name: markdown-for-agents
+    labels:
+      - "com.centurylinklabs.watchtower.enable=false"
+    restart: unless-stopped
+    dns:
+      - 1.1.1.1
+      - 8.8.8.8
+    ports:
+      - "127.0.0.1:8090:8090"
+    environment:
+      # Sidecar mode: point to your origin app
+      # ORIGIN_BACKEND: "http://your-app:8080"
+      #
+      # Or leave unset and pass X-Original-URL from nginx
+      MAX_HTML_BYTES: "5000000"
+      CONTENT_SIGNAL: "ai-train=yes, search=yes, ai-input=yes"
+      REQUEST_TIMEOUT: "15"
+      # Playwright fallback for SPAs and JS-heavy pages
+      PLAYWRIGHT_ENABLED: "true"
+      PLAYWRIGHT_TIMEOUT: "20000"
+      # Token threshold below which trafilatura output is considered empty
+      MIN_CONTENT_TOKENS: "30"
+    # Chromium needs /dev/shm
+    shm_size: "256m"
+    healthcheck:
+      test: ["CMD", "python", "-c", "import httpx; httpx.get('http://localhost:8090/health').raise_for_status()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+          cpus: "1.5"

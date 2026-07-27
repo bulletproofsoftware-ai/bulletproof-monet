@@ -1,0 +1,38 @@
+{
+  "name": "claude-memory-mcp",
+  "version": "1.0.0",
+  "description": "MCP server for Claude Memory - persistent memory storage and semantic recall",
+  "type": "module",
+  "main": "dist/index.js",
+  "bin": {
+    "claude-memory-mcp": "./dist/index.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "start": "node dist/index.js",
+    "dev": "tsc && node dist/index.js"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "^1.0.0",
+    "zod": "^4.4.3"
+  },
+  "devDependencies": {
+    "@types/node": "^26.1.1",
+    "typescript": "^7.0.2"
+  },
+  "engines": {
+    "node": ">=18.0.0"
+  },
+  "keywords": [
+    "mcp",
+    "claude",
+    "memory",
+    "semantic-search",
+    "vector-database"
+  ],
+  "author": "bulletproofsoftware-ai",
+  "license": "Apache-2.0",
+  "overrides": {
+    "@hono/node-server": "^2.0.5"
+  }
+}

@@ -1,0 +1,23 @@
+#!/bin/bash
+# reindex-obsidian — Re-index Obsidian vault for RAG search
+# Standalone replacement for ~/.claude/skills/reindex/
+# Runs the indexer script directly. No LLM needed.
+
+set -euo pipefail
+
+VENV="~/Code/claude_backend/scripts/venv/bin/python3"
+SCRIPT="~/Code/claude_backend/scripts/index-obsidian.py"
+
+if [[ ! -f "$VENV" ]]; then
+    echo "ERROR: Python venv not found at $VENV" >&2
+    exit 1
+fi
+
+if [[ ! -f "$SCRIPT" ]]; then
+    echo "ERROR: Index script not found at $SCRIPT" >&2
+    exit 1
+fi
+
+echo "Re-indexing Obsidian vault..."
+"$VENV" "$SCRIPT" "$@"
+echo "Done."

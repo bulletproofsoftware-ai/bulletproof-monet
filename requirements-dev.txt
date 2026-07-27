@@ -1,0 +1,9 @@
+# Development/test-only dependencies. Runtime deps live in requirements-webhook.txt.
+#
+#   python3 -m venv .venv
+#   ./.venv/bin/pip install -r requirements-webhook.txt -r requirements-dev.txt
+#   ./tests/run-all.sh
+#
+# Pin verified against `pip index versions pytest` and exercised by the full
+# suite at implementation time on CPython 3.14.
+pytest==9.1.1

@@ -1,0 +1,89 @@
+#!/usr/bin/env python3
+"""predictive-hint — proactive pattern-based nudge for the current day/time (PRD #50).
+
+Reads seeded + learned day/time patterns and, if the current moment matches one,
+prints a short proactive hint (and pre-warms the relevant memory topic so it's
+hot when the operator engages). Empty output when nothing matches.
+
+  predictive-hint            print the hint for now (America/New_York)
+  predictive-hint --warm     also fire a memory_recall to pre-warm the topic
+
+Config: $MONET_HOME/data/predictive-patterns.json  (auto-seeded on first run).
+Patterns are seeded with the obvious ones; the n8n predictive-pattern-extraction
+workflow refines/adds from history over time.
+"""
+import json
+import os
+import subprocess
+import sys
+from datetime import datetime
+from zoneinfo import ZoneInfo
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.realpath(__file__)), "..", "lib"))
+import monet_paths
+
+HOME = monet_paths.MONET_HOME
+CONFIG = os.environ.get("PREDICTIVE_CONFIG", f"{HOME}/data/predictive-patterns.json")
+TZ = os.environ.get("PREDICTIVE_TZ", "America/New_York")
+
+SEED = [
+    {"days": ["mon"], "part": "am", "topic": "security review",
+     "hint": "It's Monday morning — want to start the weekly security review?"},
+    {"days": ["fri"], "part": "pm", "topic": "weekly briefing prep",
+     "hint": "It's Friday afternoon — want to prep the weekly briefing / wrap-up?"},
+]
+
+DAYS = ["mon", "tue", "wed", "thu", "fri", "sat", "sun"]
+
+
+def load_patterns():
+    try:
+        with open(CONFIG) as fh:
+            data = json.load(fh)
+            if isinstance(data, list) and data:
+                return data
+    except (OSError, json.JSONDecodeError):
+        pass
+    # seed on first run
+    try:
+        os.makedirs(os.path.dirname(CONFIG), exist_ok=True)
+        with open(CONFIG, "w") as fh:
+            json.dump(SEED, fh, indent=2)
+    except OSError:
+        pass
+    return SEED
+
+
+def part_of_day(hour):
+    if hour < 12:
+        return "am"
+    if hour < 17:
+        return "pm"
+    return "eve"
+
+
+def main():
+    now = datetime.now(ZoneInfo(TZ))
+    day = DAYS[now.weekday()]
+    part = part_of_day(now.hour)
+    matched = None
+    for p in load_patterns():
+        if day in [d.lower() for d in p.get("days", [])] and p.get("part") == part:
+            matched = p
+            break
+    if not matched:
+        return
+    print(f"🔮 {matched['hint']}")
+    if "--warm" in sys.argv and matched.get("topic"):
+        # pre-warm: surface the topic from memory (best-effort, output discarded)
+        try:
+            subprocess.run([f"{HOME}/tg-memory.py", "recall",
+                            os.environ.get("MONET_DEFAULT_CHAT", "YOUR_CHAT_ID"),
+                            matched["topic"]],
+                           capture_output=True, timeout=8)
+        except Exception:  # noqa: BLE001
+            pass
+
+
+if __name__ == "__main__":
+    main()

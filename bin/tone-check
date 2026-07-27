@@ -1,0 +1,102 @@
+#!/usr/bin/env python3
+"""tone-check — calibrate outbound message tone against the configured owner voice (PRD #37).
+
+Reads the draft body (first arg, or stdin) and checks it against the operator's
+preferred outbound voice: direct but not abrasive, assertive but not aggressive,
+warm-professional, no groveling and no hostility. Prints a one-line warning when
+the draft is an outlier (so it can be surfaced in the send preview); prints
+nothing when the tone is in range.
+
+  tone-check "Just send me the files. Now."
+  echo "$BODY" | tone-check
+"""
+import json
+import os
+import subprocess
+import sys
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.realpath(__file__)), "..", "lib"))
+import monet_paths
+
+HOME = monet_paths.MONET_HOME
+MODEL = os.environ.get("TONE_MODEL", "claude-haiku-4-5")
+SUBPROC_PATH = os.pathsep.join([
+    "/usr/local/bin",
+    monet_paths.path(".local/bin"),
+    monet_paths.path("bin"),
+    "/usr/bin",
+    "/bin",
+])
+MIN_CHARS = int(os.environ.get("TONE_MIN_CHARS", "15"))
+OWNER = os.environ.get("MONET_OWNER_NAME", "the operator")
+
+PROMPT = (
+    f"You check the TONE of an outbound email/SMS {OWNER} is about to send. {OWNER}'s "
+    "preferred voice: direct but not abrasive, assertive but not aggressive, "
+    "warm-professional, concise; never groveling/over-apologetic and never "
+    "hostile, passive-aggressive, or condescending. Judge ONLY tone, not content "
+    "or formatting. If the draft is within range, return ok. If it reads as "
+    "abrasive, aggressive, curt-to-the-point-of-rude, passive-aggressive, or "
+    "excessively apologetic, return outlier with a brief reason and a short "
+    "suggested softer/firmer rewrite direction. "
+    "Output STRICT JSON only, no prose, no code fences: "
+    '{"tone":"ok|outlier","reason":"short","suggestion":"short"}. '
+    "DRAFT:\n"
+)
+
+
+def _extract_json(text):
+    if not text:
+        return None
+    s = text.find("{")
+    if s == -1:
+        return None
+    depth = 0
+    for i in range(s, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[s:i + 1])
+                except json.JSONDecodeError:
+                    return None
+    return None
+
+
+def main():
+    body = sys.argv[1] if len(sys.argv) > 1 else sys.stdin.read()
+    body = body.strip()
+    if len(body) < MIN_CHARS:
+        return
+    try:
+        p = subprocess.run(
+            ["claude", "-p", "--model", MODEL, "--max-turns", "1",
+             "--dangerously-skip-permissions", "--disable-slash-commands",
+             "--output-format", "json", PROMPT + body[:6000]],
+            capture_output=True, text=True, timeout=45, cwd=HOME,
+            env={**os.environ, "HOME": HOME,
+                 "PATH": SUBPROC_PATH + ":" + os.environ.get("PATH", "")},
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return
+    if p.returncode != 0:
+        return
+    try:
+        result = json.loads(p.stdout).get("result", "")
+    except json.JSONDecodeError:
+        return
+    obj = _extract_json(result)
+    if not obj or str(obj.get("tone", "ok")).lower() != "outlier":
+        return
+    reason = str(obj.get("reason", "")).strip()
+    suggestion = str(obj.get("suggestion", "")).strip()
+    msg = "⚠️ Tone check: " + (reason or "reads off-voice")
+    if suggestion:
+        msg += f" — consider: {suggestion}"
+    print(msg)
+
+
+if __name__ == "__main__":
+    main()

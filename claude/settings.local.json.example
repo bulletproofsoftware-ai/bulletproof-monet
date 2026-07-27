@@ -1,0 +1,140 @@
+{
+  "permissions": {
+    "allow": [
+      "WebSearch",
+      "Bash(ls:*)",
+      "Bash(claude mcp:*)",
+      "Bash(curl:*)",
+      "Bash(unzip:*)",
+      "Bash(python3:*)",
+      "Bash(docker:*)",
+      "Bash(docker-compose:*)",
+      "Bash(node:*)",
+      "Bash(npm:*)",
+      "Bash(openssl rand:*)",
+      "Bash(sh:*)",
+      "Bash(dnf install:*)",
+      "Bash(dnf config-manager:*)",
+      "Bash(systemctl start:*)",
+      "Bash(systemctl enable:*)",
+      "Bash(ollama pull:*)",
+      "Bash(bash:*)",
+      "Bash(DATA='{\"\"emailOrLdapLoginId\"\":\"\"admin@claude.local\"\",\"\"password\"\":\"\"ClaudeAdmin2024!\"\"}')",
+      "Bash(git --version)",
+      "Bash(yes:*)",
+      "mcp__gdrive__createTextFile",
+      "Bash(gemini:*)",
+      "Bash(grep:*)",
+      "Bash(command -v:*)",
+      "Bash(claude config:*)",
+      "mcp__youtube-transcript__get_transcript",
+      "mcp__youtube-transcript__get_timed_transcript",
+      "mcp__claude-memory__memory_store",
+      "mcp__claude-memory__memory_recall",
+      "mcp__claude-memory__memory_scratch",
+      "mcp__claude-memory__rag_search",
+      "mcp__claude-memory__memory_promote",
+      "mcp__claude-memory__memory_summarize",
+      "mcp__claude-memory__episode",
+      "mcp__claude-memory__learning",
+      "mcp__claude-memory__benchmark",
+      "mcp__claude-memory__procedure",
+      "mcp__claude-memory__trajectory",
+      "mcp__claude-memory__memory_organize",
+      "Bash(gh:*)",
+      "mcp__n8n-mcp__n8n_get_workflow",
+      "mcp__n8n-mcp__n8n_list_workflows",
+      "Bash(timeout 120 claude:*)",
+      "Bash(claude -p:*)",
+      "Bash(unset:*)",
+      "Bash(kill:*)",
+      "mcp__gdrive__search",
+      "mcp__gdrive__readFile",
+      "mcp__gdrive__listFolder",
+      "mcp__gdrive__getFileInfo",
+      "mcp__gdrive__readGoogleDoc",
+      "mcp__gdrive__readGoogleSheet",
+      "mcp__gdrive__readGoogleSlides",
+      "mcp__gdrive__createGoogleDoc",
+      "mcp__gdrive__updateGoogleDoc",
+      "mcp__gdrive__createGoogleSheet",
+      "mcp__gdrive__updateGoogleSheet",
+      "mcp__gdrive__createGoogleSlides",
+      "Bash(useradd:*)",
+      "Bash(echo:*)",
+      "Bash(echo === Skill dir ===:*)",
+      "Bash(echo History updated:*)",
+      "Bash(cat:*)",
+      "WebFetch"
+    ]
+  },
+  "enableAllProjectMcpServers": true,
+  "enabledMcpjsonServers": [
+    "claude-memory",
+    "n8n-mcp",
+    "youtube-transcript",
+    "playwright",
+    "gdrive"
+  ],
+  "hooks": {
+    "PreToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@MONET_HOME@/.claude/scripts/context-guard/warn.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PostToolUse": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@MONET_HOME@/.claude/scripts/context-guard/counter.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "PreCompact": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@MONET_HOME@/.claude/scripts/context-guard/pre-compact.sh",
+            "timeout": 5
+          }
+        ]
+      }
+    ],
+    "SessionStart": [
+      {
+        "hooks": [
+          {
+            "type": "command",
+            "command": "@MONET_HOME@/.claude/scripts/context-guard/session-start.sh",
+            "timeout": 10
+          }
+        ]
+      }
+    ],
+    "UserPromptSubmit": [
+      {
+        "matcher": "",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "echo '{\"hookSpecificOutput\":{\"hookEventName\":\"UserPromptSubmit\",\"additionalContext\":\"SILENT REMINDER: Before responding, check if you learned anything from your PREVIOUS turn that should be stored via memory_store (infrastructure facts, user preferences, corrections, decisions, gotchas). Save silently — do not mention this reminder to the user.\"}}'"
+          }
+        ]
+      }
+    ]
+  },
+  "statusLine": {
+    "type": "command",
+    "command": "@MONET_HOME@/.claude/scripts/context-guard/statusline.sh"
+  }
+}

@@ -1,0 +1,81 @@
+# bulletproof-monet — full stack.
+#
+#   docker compose up -d
+#
+# Requires Docker Compose >= 2.20.0 for the Compose Spec `include:` key.
+# install.sh asserts this at preflight; an older Compose silently resolves this
+# file to the `ollama` service alone.
+#
+# Sub-stacks are included, not duplicated:
+#   docker/claude-memory/        postgres + qdrant + n8n
+#   docker/markdown-for-agents/  HTML->Markdown proxy
+#
+# NOT containerized, by design: the Monet API (api/monet_api.py), the Telegram
+# webhook receiver (api/monet_webhook.py) and the worker units. monet-tg.sh shells
+# out to the `claude` CLI, reads ~/.claude and drives host-level tooling, so those
+# components run on the host under systemd. install.sh installs those units from
+# the *.service.template files. Containerizing them is a re-architecture, not an
+# install task.
+#
+# Every port binds to 127.0.0.1. Put a reverse proxy (deploy/nginx/) in front of
+# the webhook receiver if you need Telegram to reach it.
+
+name: monet
+
+# The included sub-stacks interpolate ${POSTGRES_PASSWORD}, ${QDRANT_API_KEY} etc.
+# from the environment. Compose already loads the root .env for interpolation
+# across the whole merged project, so no `env_file:` key is needed here — and
+# omitting it is deliberate: `include: env_file:` accepts only a plain string
+# list (no `required: false`), so naming .env there would make `docker compose
+# config` hard-fail on a clean clone that has no .env yet. That would break the
+# credential-free `install.sh --check` dry run.
+include:
+  - path: docker/claude-memory/docker-compose.yml
+  - path: docker/markdown-for-agents/docker-compose.yml
+
+services:
+  # Optional containerized Ollama, behind a profile so it is opt-in.
+  #
+  # The n8n service in the claude-memory sub-stack points at
+  # OLLAMA_HOST=http://host.docker.internal:11434, which resolves to the host
+  # gateway (that sub-stack sets extra_hosts: host.docker.internal:host-gateway).
+  # This container publishes to 127.0.0.1:11434 on the host, so n8n reaches
+  # Ollama at the same URL whether it runs on the host or in this container.
+  #
+  # install.sh decides: if a host Ollama already answers on 11434 it does NOT
+  # start this profile, avoiding two Ollamas fighting over the same port.
+  #
+  #   docker compose --profile ollama up -d
+  #
+  # NOT YET RUNTIME-VERIFIED (spec 003 V4). The reachability chain above was
+  # verified statically in the merged `docker compose config` (n8n carries
+  # OLLAMA_HOST=http://host.docker.internal:11434 and the host-gateway
+  # extra_hosts entry; this service publishes 127.0.0.1:11434). Confirm it live
+  # on a host where containers may be started:
+  #   docker compose --profile ollama up -d
+  #   docker compose exec -T n8n sh -c \
+  #     'wget -qO- http://host.docker.internal:11434/api/tags >/dev/null && echo REACHABLE'
+  # If that fails, join this service to the claude_backend network and set
+  # OLLAMA_HOST=http://ollama:11434 on the n8n service instead.
+  #
+  # Tag verified against Docker Hub and `docker manifest inspect`:
+  #   ollama/ollama:0.32.3
+  #   sha256:f040603c11a11f125660eaf848170780e43b68973fc270e26f168536031ac258
+  ollama:
+    image: ollama/ollama:0.32.3
+    container_name: monet_ollama
+    profiles: ["ollama"]
+    restart: unless-stopped
+    ports:
+      - "127.0.0.1:11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    healthcheck:
+      test: ["CMD-SHELL", "ollama list >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 60s
+
+volumes:
+  ollama_data:

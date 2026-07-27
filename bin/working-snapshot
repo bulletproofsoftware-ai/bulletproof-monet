@@ -1,0 +1,154 @@
+#!/usr/bin/env python3
+"""working-snapshot — Monet working-memory snapshots (PRD #30).
+
+  save <chat_id> <session_id>   resume the ending session, extract a structured
+                                snapshot {doing, pending[], open_questions[]},
+                                store it as the latest snapshot for the chat.
+  load <chat_id>                print the latest snapshot as a compact context
+                                block (empty if none / too old).
+
+Store: $MONET_HOME/data/working-memory/<chat_id>.json (latest snapshot only).
+Loaded at the start of the next session so Monet resumes warm (feeds #49).
+"""
+import json
+import os
+import subprocess
+import sys
+import time
+import os as _os, sys as _sys
+_sys.path.insert(0, _os.path.join(_os.path.dirname(_os.path.realpath(__file__)), "..", "lib"))
+import monet_paths
+
+HOME = monet_paths.MONET_HOME
+# Self-contained PATH so `claude` resolves regardless of caller (mirrors the
+# other monet cron/bg scripts).
+SUBPROC_PATH = os.pathsep.join([
+    "/usr/local/bin",
+    monet_paths.path(".local/bin"),
+    monet_paths.path("bin"),
+    "/usr/bin",
+    "/bin",
+])
+STORE_DIR = os.environ.get("MONET_WM_DIR", f"{HOME}/data/working-memory")
+MODEL = os.environ.get("WM_MODEL", "claude-haiku-4-5")
+MAX_AGE_DAYS = int(os.environ.get("WM_MAX_AGE_DAYS", "7"))
+
+EXTRACT_PROMPT = (
+    "Summarize the CURRENT state of this conversation as STRICT JSON only "
+    "(no prose, no code fences):\n"
+    '{"doing": "one sentence on what we were working on", '
+    '"pending": ["short item", ...], '
+    '"open_questions": ["short question", ...]}\n'
+    "Keep each list to at most 4 short items. If nothing pending/open, use []."
+)
+
+
+def _store_path(chat_id):
+    safe = "".join(c for c in str(chat_id) if c.isalnum() or c in "-_") or "unknown"
+    return os.path.join(STORE_DIR, f"{safe}.json")
+
+
+def _extract_json(text):
+    if not text:
+        return None
+    s = text.find("{")
+    if s == -1:
+        return None
+    depth = 0
+    for i in range(s, len(text)):
+        if text[i] == "{":
+            depth += 1
+        elif text[i] == "}":
+            depth -= 1
+            if depth == 0:
+                try:
+                    return json.loads(text[s:i + 1])
+                except json.JSONDecodeError:
+                    return None
+    return None
+
+
+def save(chat_id, session_id):
+    if not session_id:
+        return
+    try:
+        proc = subprocess.run(
+            ["claude", "-p", "--resume", session_id, "--model", MODEL,
+             "--max-turns", "1", "--dangerously-skip-permissions",
+             "--disable-slash-commands", "--output-format", "json", EXTRACT_PROMPT],
+            capture_output=True, text=True, timeout=45, cwd=HOME,
+            env={**os.environ, "HOME": HOME,
+                 "PATH": SUBPROC_PATH + ":" + os.environ.get("PATH", "")},
+        )
+    except (subprocess.TimeoutExpired, FileNotFoundError):
+        return
+    if proc.returncode != 0:
+        return
+    try:
+        result = json.loads(proc.stdout).get("result", "")
+    except json.JSONDecodeError:
+        return
+    obj = _extract_json(result)
+    if not obj or not isinstance(obj, dict):
+        return
+    snap = {
+        "chat_id": str(chat_id),
+        "session_id": session_id,
+        "ts": int(time.time()),
+        "doing": str(obj.get("doing", "")).strip(),
+        "pending": [str(x).strip() for x in (obj.get("pending") or [])][:4],
+        "open_questions": [str(x).strip() for x in (obj.get("open_questions") or [])][:4],
+    }
+    if not snap["doing"] and not snap["pending"] and not snap["open_questions"]:
+        return
+    os.makedirs(STORE_DIR, exist_ok=True)
+    path = _store_path(chat_id)
+    tmp = path + ".tmp"
+    with open(tmp, "w") as fh:
+        json.dump(snap, fh, indent=2)
+    os.replace(tmp, path)
+    print(f"snapshot saved {path}")
+
+
+def _ago(ts):
+    d = max(0, int(time.time()) - int(ts))
+    if d < 3600:
+        return f"{d // 60}m ago"
+    if d < 86400:
+        return f"{d // 3600}h ago"
+    return f"{d // 86400}d ago"
+
+
+def load(chat_id):
+    path = _store_path(chat_id)
+    try:
+        with open(path) as fh:
+            snap = json.load(fh)
+    except (OSError, json.JSONDecodeError):
+        return
+    if int(time.time()) - int(snap.get("ts", 0)) > MAX_AGE_DAYS * 86400:
+        return
+    parts = [f"🧠 Last session ({_ago(snap.get('ts', 0))}):"]
+    if snap.get("doing"):
+        parts.append(f"Working on: {snap['doing']}")
+    if snap.get("pending"):
+        parts.append("Pending: " + "; ".join(snap["pending"]))
+    if snap.get("open_questions"):
+        parts.append("Open questions: " + "; ".join(snap["open_questions"]))
+    if len(parts) > 1:
+        print(" ".join(parts))
+
+
+def main():
+    cmd = sys.argv[1] if len(sys.argv) > 1 else ""
+    if cmd == "save" and len(sys.argv) >= 4:
+        save(sys.argv[2], sys.argv[3])
+    elif cmd == "load" and len(sys.argv) >= 3:
+        load(sys.argv[2])
+    else:
+        print("usage: working-snapshot save <chat_id> <session_id> | load <chat_id>",
+              file=sys.stderr)
+
+
+if __name__ == "__main__":
+    main()

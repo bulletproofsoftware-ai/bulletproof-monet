@@ -1,0 +1,75 @@
+#!/bin/bash
+# monet-memwf-check — daily health check for the n8n memory workflows.
+# Pings Telegram ONLY if a memory workflow's most-recent run is recent (<26h)
+# AND failed. Silent when everything is green. Cron: daily after the 3-4AM runs.
+# shellcheck source=lib/monet-env.sh
+. "$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)/../lib/monet-env.sh"
+cd "$MONET_HOME" || exit 1
+set -uo pipefail
+
+export PATH="/usr/local/bin:${MONET_HOME}/.local/bin:${MONET_HOME}/bin:/usr/bin:/bin"
+# /var/log is not writable by the service user on a clean install.
+LOG_FILE="${MONET_LOG_FILE:-${MONET_LOG_DIR:-$MONET_HOME/logs}/monet-tg.log}"
+mkdir -p "$(dirname "$LOG_FILE")" 2>/dev/null || true
+{ : >> "$LOG_FILE"; } 2>/dev/null || LOG_FILE=/dev/null
+N8N="http://localhost:5679/api/v1"
+
+: "${N8N_API_KEY:?N8N_API_KEY not set}"
+CHAT_ID="${MEMWF_CHECK_CHAT:-${MONET_DEFAULT_CHAT:-YOUR_CHAT_ID}}"
+
+# Memory-maintenance workflows to watch
+WFS="session-extraction memory-compaction-wf benchmark-regression monthly-review tier-transfer compliance-report permission-review predictive-patterns hippocampal-consolidation hierarchical-abstraction active-pruning skill-discovery daily-ttl-sweep"
+
+REPORT=$(N8N="$N8N" KEY="$N8N_API_KEY" WFS="$WFS" python3 - <<'PY'
+import os, json, urllib.request, datetime
+base=os.environ["N8N"]; key=os.environ["KEY"]
+now=datetime.datetime.now(datetime.timezone.utc)
+red=[]
+for wf in os.environ["WFS"].split():
+    try:
+        req=urllib.request.Request(f"{base}/executions?workflowId={wf}&limit=1",
+                                   headers={"X-N8N-API-KEY":key})
+        d=json.load(urllib.request.urlopen(req,timeout=10)).get("data",[])
+    except Exception:
+        continue
+    if not d:
+        continue
+    e=d[0]; status=e.get("status") or "?"
+    started=e.get("startedAt") or ""
+    if status=="success":
+        continue
+    # only alert if the failed run is recent (<26h) — ignore stale weekly/monthly reds
+    try:
+        sdt=datetime.datetime.fromisoformat(started.replace("Z","+00:00"))
+        age_h=(now-sdt).total_seconds()/3600
+    except Exception:
+        age_h=999
+    if age_h <= 26:
+        red.append(f"• {wf}: {status} ({age_h:.0f}h ago)")
+print("\n".join(red))
+PY
+)
+
+# --- Active probe of the Claude Memory Gateway (MSvaRPMrLFrDQ4jQ) ---
+# It's webhook-triggered (not scheduled), so a passive last-run check can't see
+# it. Send a read-only recall and confirm HTTP 200 + success.
+WK=$(grep -E '^WEBHOOK_API_KEY=' ~/mcp-servers/.env 2>/dev/null | head -1 | cut -d= -f2- | tr -d '"'"'"'')
+if [ -n "$WK" ]; then
+    GCODE=$(curl -s -m15 -o /tmp/.memwf_gw_probe -w "%{http_code}" -X POST \
+        "http://localhost:5679/webhook/memory" -H "x-api-key: $WK" \
+        -H "Content-Type: application/json" \
+        -d '{"action":"recall","query":"daily gateway health probe"}' 2>/dev/null)
+    if [ "$GCODE" != "200" ] || ! grep -q '"success":true' /tmp/.memwf_gw_probe 2>/dev/null; then
+        REPORT="${REPORT:+$REPORT
+}• Claude Memory Gateway: recall probe failed (HTTP $GCODE)"
+    fi
+    rm -f /tmp/.memwf_gw_probe
+fi
+
+if [ -n "$REPORT" ]; then
+    printf '⚠️ *Memory health — needs attention* (last 26h):\n\n%s\n\n_Check the failing nodes._' "$REPORT" \
+        | "$MONET_HOME"/tg-send.sh "$CHAT_ID" 2>/dev/null
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] MEMWFCHECK alerted: $(echo "$REPORT" | tr '\n' ';')" >> "$LOG_FILE"
+else
+    echo "[$(date '+%Y-%m-%d %H:%M:%S')] MEMWFCHECK all green incl gateway (silent)" >> "$LOG_FILE"
+fi
