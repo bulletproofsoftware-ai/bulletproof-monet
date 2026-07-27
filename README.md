@@ -4,7 +4,7 @@ Monet is a self-hostable personal assistant that runs on one Linux host and is r
 
 ![bulletproof-monet — overview](docs/media/infographic.png)
 
-> Full documentation in [`docs/`](docs/) · security scan in [`docs/scan/scan-report.md`](docs/scan/scan-report.md) · system overview: [briefing](media/system-overview.md) · [generated briefing](media/system-overview-briefing.md) · [video](media/system-overview.mp4).
+> Full documentation in [`docs/`](docs/) · security scan in [`docs/scan/scan-report.md`](docs/scan/scan-report.md) · system overview: [briefing](media/system-overview.md) · [generated briefing](media/system-overview-briefing.md) · [deck](media/bulletproof-monet-deck.pdf) · [video](media/system-overview.mp4).
 
 ## What you get
 
