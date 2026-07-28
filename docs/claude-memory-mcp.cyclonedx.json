@@ -2834,6 +2834,16 @@
         {
           "name": "aquasecurity:trivy:PkgType",
           "value": "pip"
+        },
+        {
+          "name": "bulletproof:hash-source",
+          "value": "pypi:fastapi-0.115.8-py3-none-any.whl"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "753a96dd7e036b34eeef8babdfcfe3f28ff79648f86551eb36bfc1b0bf4a8cbf"
         }
       ]
     },
@@ -2854,6 +2864,16 @@
         {
           "name": "aquasecurity:trivy:PkgType",
           "value": "pip"
+        },
+        {
+          "name": "bulletproof:hash-source",
+          "value": "pypi:httpx-0.28.1-py3-none-any.whl"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "d909fcccc110f8c7faf814ca82a9a4d816bc5a6dbfea25d6591d6985b8ba59ad"
         }
       ]
     },
@@ -2867,6 +2887,16 @@
         {
           "name": "aquasecurity:trivy:PkgType",
           "value": "pip"
+        },
+        {
+          "name": "bulletproof:hash-source",
+          "value": "pypi:playwright-1.50.0-py3-none-macosx_10_13_x86_64.whl"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "f36d754a6c5bd9bf7f14e8f57a2aea6fd08f39ca4c8476481b9c83e299531148"
         }
       ]
     },
@@ -2880,6 +2910,16 @@
         {
           "name": "aquasecurity:trivy:PkgType",
           "value": "pip"
+        },
+        {
+          "name": "bulletproof:hash-source",
+          "value": "pypi:trafilatura-2.0.0-py3-none-any.whl"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "77eb5d1e993747f6f20938e1de2d840020719735690c840b9a1024803a4cd51d"
         }
       ]
     },
@@ -2893,6 +2933,16 @@
         {
           "name": "aquasecurity:trivy:PkgType",
           "value": "pip"
+        },
+        {
+          "name": "bulletproof:hash-source",
+          "value": "pypi:uvicorn-0.34.0-py3-none-any.whl"
+        }
+      ],
+      "hashes": [
+        {
+          "alg": "SHA-256",
+          "content": "023dc038422502fa28a09c7a30bf2b6991512da7dcdb8fd35fe57cfc154126f4"
         }
       ]
     }
