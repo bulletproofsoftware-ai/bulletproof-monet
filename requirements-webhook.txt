@@ -6,5 +6,5 @@
 #
 # Pins verified to install together in a clean venv on CPython 3.11 and 3.12.
 fastapi==0.140.0
-uvicorn[standard]==0.51.0
+uvicorn[standard]==0.52.0
 httpx==0.28.1
